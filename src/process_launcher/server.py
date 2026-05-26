@@ -1,0 +1,275 @@
+from __future__ import annotations
+
+import asyncio
+import os
+import signal
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+
+from .config import load_config
+from .log import HeartbeatLogger, OutputLogger
+from .models import LauncherConfig, ProcessInfo, RunRequest, RunResponse, ScheduledJob, ScheduledStatus, ServiceConfig
+from .process import ProcessManager
+from .service_monitor import ServiceMonitor
+
+
+def create_app(config_path: str | Path | None = None, config: LauncherConfig | None = None) -> FastAPI:
+    resolved_config_path = Path(config_path) if config_path else None
+
+    def get_config() -> LauncherConfig:
+        if config is not None:
+            return config
+        if resolved_config_path is None:
+            raise RuntimeError("config path is required")
+        return load_config(resolved_config_path)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        await initialize_app_state(app, get_config(), resolved_config_path)
+        try:
+            yield
+        finally:
+            await shutdown_app_state(app)
+
+    app = FastAPI(title="Process Launcher", lifespan=lifespan)
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.post("/run", response_model=RunResponse)
+    async def run_command(request: RunRequest) -> RunResponse:
+        process_manager: ProcessManager = app.state.process_manager
+        service_monitor: ServiceMonitor = app.state.service_monitor
+        if request.always_on:
+            if not request.label:
+                raise HTTPException(status_code=400, detail="label is required for always_on services")
+            config_obj = ServiceConfig(label=request.label, command=request.command, cwd=request.cwd, env=request.env)
+            process = await service_monitor.start_ad_hoc_service(config_obj)
+            return RunResponse(
+                pid=process.pid,
+                label=process.label,
+                started_at=process.started_at,
+                output_file=process.output_file,
+            )
+        if request.delay_seconds and request.delay_seconds > 0:
+            scheduled_at = datetime.now()
+            run_at = scheduled_at + timedelta(seconds=request.delay_seconds)
+            job = ScheduledJob(
+                label=request.label,
+                command=request.command if isinstance(request.command, str) else " ".join(request.command),
+                cwd=request.cwd,
+                scheduled_at=scheduled_at,
+                run_at=run_at,
+            )
+            scheduled_manager: ScheduledManager = app.state.scheduled_manager
+            scheduled_manager.add(job)
+            task = asyncio.create_task(_delayed_run(process_manager, scheduled_manager, job, request, request.delay_seconds))
+            scheduled_manager.set_task(job.id, task)
+            return RunResponse(
+                pid=0,
+                label=request.label,
+                started_at=scheduled_at,
+                output_file=None,
+            )
+        return await process_manager.start_process(request)
+
+    @app.get("/scheduled", response_model=list[ScheduledJob])
+    async def list_scheduled() -> list[ScheduledJob]:
+        scheduled_manager: ScheduledManager = app.state.scheduled_manager
+        return scheduled_manager.list_jobs()
+
+    @app.post("/scheduled/{job_id}/cancel", response_model=ScheduledJob)
+    async def cancel_scheduled(job_id: str) -> ScheduledJob:
+        scheduled_manager: ScheduledManager = app.state.scheduled_manager
+        try:
+            return scheduled_manager.cancel(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="scheduled job not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/processes", response_model=list[ProcessInfo])
+    async def list_processes(running_only: bool = False) -> list[ProcessInfo]:
+        process_manager: ProcessManager = app.state.process_manager
+        return process_manager.list_processes(running_only=running_only)
+
+    @app.get("/processes/{pid}", response_model=ProcessInfo)
+    async def get_process(pid: int) -> ProcessInfo:
+        process_manager: ProcessManager = app.state.process_manager
+        process = process_manager.get_process(pid)
+        if process is None:
+            raise HTTPException(status_code=404, detail="process not found")
+        return process
+
+    @app.post("/processes/{pid}/stop", response_model=ProcessInfo)
+    async def stop_process(pid: int) -> ProcessInfo:
+        process_manager: ProcessManager = app.state.process_manager
+        try:
+            return await process_manager.stop_process(pid)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="process not found") from exc
+
+    @app.get("/processes/{pid}/output")
+    async def get_process_output(pid: int, tail: int | None = Query(default=None, ge=1)) -> dict[str, object]:
+        process_manager: ProcessManager = app.state.process_manager
+        try:
+            return process_manager.get_output(pid, tail=tail)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="process not found") from exc
+
+    @app.get("/services")
+    async def list_services() -> list[dict[str, object]]:
+        service_monitor: ServiceMonitor = app.state.service_monitor
+        return service_monitor.list_services()
+
+    @app.post("/services/{label}/restart", response_model=ProcessInfo)
+    async def restart_service(label: str) -> ProcessInfo:
+        service_monitor: ServiceMonitor = app.state.service_monitor
+        try:
+            return await service_monitor.restart_service(label)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="service not found") from exc
+
+    @app.post("/services/{label}/reset", response_model=ProcessInfo)
+    async def reset_service(label: str) -> ProcessInfo:
+        service_monitor: ServiceMonitor = app.state.service_monitor
+        try:
+            return await service_monitor.reset_circuit_breaker(label)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="service not found") from exc
+
+    @app.get("/logs/heartbeat")
+    async def get_heartbeat_logs(
+        limit: int = Query(default=100, ge=1, le=1000),
+        event: str | None = None,
+        label: str | None = None,
+        since: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        heartbeat_logger: HeartbeatLogger = app.state.heartbeat_logger
+        return heartbeat_logger.read_events(limit=limit, event=event, label=label, since=since)
+
+    @app.get("/logs/output")
+    async def list_output_logs() -> list[dict[str, Any]]:
+        output_logger: OutputLogger = app.state.output_logger
+        return output_logger.list_output_logs()
+
+    @app.get("/logs/output/{filename}")
+    async def read_output_log(filename: str, tail: int | None = Query(default=None, ge=1)) -> dict[str, Any]:
+        output_logger: OutputLogger = app.state.output_logger
+        try:
+            return output_logger.read_output_log(filename, tail=tail)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="log file not found") from exc
+
+    @app.post("/shutdown")
+    async def shutdown_launcher(background_tasks: BackgroundTasks) -> dict[str, str]:
+        background_tasks.add_task(_terminate_self)
+        return {"status": "shutting_down"}
+
+    return app
+
+
+async def _terminate_self() -> None:
+    await asyncio.sleep(0.1)
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+class ScheduledManager:
+    """In-memory tracker for delayed/scheduled jobs."""
+
+    def __init__(self) -> None:
+        self._jobs: dict[str, ScheduledJob] = {}
+        self._tasks: dict[str, asyncio.Task[None]] = {}
+
+    def add(self, job: ScheduledJob) -> None:
+        self._jobs[job.id] = job
+
+    def set_task(self, job_id: str, task: asyncio.Task[None]) -> None:
+        self._tasks[job_id] = task
+
+    def mark_running(self, job_id: str, pid: int) -> None:
+        job = self._jobs.get(job_id)
+        if job:
+            self._jobs[job_id] = job.model_copy(update={"status": ScheduledStatus.RUNNING, "result_pid": pid})
+
+    def mark_completed(self, job_id: str) -> None:
+        job = self._jobs.get(job_id)
+        if job:
+            self._jobs[job_id] = job.model_copy(update={"status": ScheduledStatus.COMPLETED})
+        self._tasks.pop(job_id, None)
+
+    def cancel(self, job_id: str) -> ScheduledJob:
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        if job.status != ScheduledStatus.PENDING:
+            raise ValueError(f"Cannot cancel job in status {job.status.value}")
+        task = self._tasks.pop(job_id, None)
+        if task and not task.done():
+            task.cancel()
+        self._jobs[job_id] = job.model_copy(update={"status": ScheduledStatus.CANCELLED})
+        return self._jobs[job_id]
+
+    def list_jobs(self) -> list[ScheduledJob]:
+        return sorted(self._jobs.values(), key=lambda j: j.scheduled_at)
+
+
+async def _delayed_run(
+    process_manager: ProcessManager,
+    scheduled_manager: ScheduledManager,
+    job: ScheduledJob,
+    request: RunRequest,
+    delay: float,
+) -> None:
+    try:
+        await asyncio.sleep(delay)
+    except asyncio.CancelledError:
+        return
+    scheduled_manager.mark_running(job.id, pid=0)
+    try:
+        response = await process_manager.start_process(request)
+        scheduled_manager.mark_running(job.id, pid=response.pid)
+        scheduled_manager.mark_completed(job.id)
+    except Exception:
+        scheduled_manager.mark_completed(job.id)
+
+
+async def initialize_app_state(app: FastAPI, launcher_config: LauncherConfig, config_path: Path | None = None) -> None:
+    if getattr(app.state, "process_manager", None) is not None:
+        return
+
+    base_dir = config_path.parent.parent if config_path else Path.cwd()
+    log_dir = base_dir / launcher_config.logging.dir
+    heartbeat_logger = HeartbeatLogger(log_dir, retention_days=launcher_config.logging.heartbeat_retention_days)
+    output_logger = OutputLogger(log_dir, retention_days=launcher_config.logging.output_retention_days)
+    process_manager = ProcessManager(heartbeat_logger, output_logger)
+    service_monitor = ServiceMonitor(process_manager, heartbeat_logger)
+    service_monitor.register_services(launcher_config.services)
+    scheduled_manager = ScheduledManager()
+
+    app.state.launcher_config = launcher_config
+    app.state.heartbeat_logger = heartbeat_logger
+    app.state.output_logger = output_logger
+    app.state.process_manager = process_manager
+    app.state.service_monitor = service_monitor
+    app.state.scheduled_manager = scheduled_manager
+
+    await service_monitor.start_registered_services()
+
+
+async def shutdown_app_state(app: FastAPI) -> None:
+    service_monitor: ServiceMonitor | None = getattr(app.state, "service_monitor", None)
+    process_manager: ProcessManager | None = getattr(app.state, "process_manager", None)
+    if service_monitor is not None:
+        await service_monitor.shutdown()
+    if process_manager is not None:
+        await process_manager.stop_all()
+
+    for attr in ("service_monitor", "process_manager", "heartbeat_logger", "output_logger", "launcher_config", "scheduled_manager"):
+        if hasattr(app.state, attr):
+            delattr(app.state, attr)
