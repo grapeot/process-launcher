@@ -4,7 +4,9 @@
 
 Local automation often needs a small trusted process to start commands, track their lifecycle, and expose status to scripts or AI agents. Shell scripts can start commands, but they do not provide a reusable API for process status, output lookup, delayed launch cancellation, or simple always-on service recovery.
 
-Process Launcher provides that control surface as a localhost FastAPI service. It is intentionally narrow: receive a command, start a child process, capture output, record lifecycle events, and expose the current in-memory state.
+On macOS, an additional constraint comes from TCC (Transparency Consent and Control) privacy controls. The system restricts access to Microphone, Camera, Screen Recording, Accessibility, Full Disk Access, and protected folders. These checks look at the responsible process and its GUI application ancestry. A child process only inherits TCC permissions if its parent chain leads back to a trusted GUI application that the user has granted permission to.
+
+Process Launcher provides both the control surface and a TCC permission bridge. It is intentionally narrow: receive a command, start a child process, capture output, record lifecycle events, and expose the current in-memory state. Started from an interactive terminal, every child it launches inherits that terminal's TCC grants.
 
 ## Goals
 

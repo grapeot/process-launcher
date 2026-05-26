@@ -4,6 +4,14 @@
 
 Use Process Launcher when a local workflow needs to start a command through a trusted localhost API, inspect process status, read output logs, or manage a small always-on service.
 
+## Why Process Launcher Exists (macOS TCC)
+
+Process Launcher started as a solution to a macOS-specific problem. Apple's TCC (Transparency Consent and Control) framework restricts access to Microphone, Camera, Screen Recording, Accessibility, Full Disk Access, and protected folders. The system checks the responsible process and its GUI application ancestry. A plain background process spawned by cron, launchd, or PM2 has no GUI ancestor and therefore inherits no TCC permissions.
+
+Process Launcher acts as a bridge. Start it from an interactive terminal (Terminal.app, iTerm2), and every job it launches inherits that terminal's TCC grants. All TCC-sensitive work goes through this one process, so you do not need each automation script to reconnect to a GUI session.
+
+**This only works if the launcher itself runs inside an interactive GUI terminal session.** Background supervisors break the chain. See the Start section below for details.
+
 ## Setup
 
 Install the package in editable mode:
@@ -23,7 +31,10 @@ Put real paths, service labels, and `.env` references only in the ignored local 
 
 ## Start The Launcher
 
+**Important:** Start the launcher from an interactive terminal session. Terminal.app or iTerm2 works. tmux and zellij work only if the multiplexer server was itself started from one of those GUI terminals. If the server was started by launchd, SSH, or an automated script, TCC inheritance is broken.
+
 ```bash
+# From an interactive terminal
 process-launcher start --config config/launcher.yaml
 ```
 
@@ -32,6 +43,8 @@ The module entrypoint is equivalent:
 ```bash
 python -m process_launcher start --config config/launcher.yaml
 ```
+
+**Do not** start the launcher from cron, launchd, PM2, or any supervisor that lacks a GUI terminal ancestor. Jobs launched through those parents will not have TCC access, which is the main reason to use this tool on macOS.
 
 ## Common Calls
 
