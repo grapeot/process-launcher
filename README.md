@@ -52,6 +52,42 @@ curl -sf -X POST http://127.0.0.1:7997/run \
   -d '{"command": ["python", "-c", "print(\"hello\")"], "label": "hello"}'
 ```
 
+## macOS TCC Permission Bridge
+
+macOS privacy controls (TCC, Transparency Consent and Control) restrict access to Microphone, Camera, Screen Recording, Accessibility, Full Disk Access, and protected folders like Desktop, Documents, and Downloads. The system checks the responsible process and its GUI application ancestry. A child process only inherits TCC permissions if its parent chain leads back to a trusted GUI application (Terminal, iTerm2) that the user has granted permission to.
+
+Process Launcher acts as a TCC permission bridge. You start it inside an interactive terminal session, and every child it launches runs in that same permission context. This lets automation scripts and AI agents run TCC-sensitive commands through the API without each child having to reconnect to a GUI session.
+
+### When It Matters
+
+- Local Network access (Bonjour, mDNS, local socket discovery).
+- Microphone or Camera recording.
+- Screen Recording or Accessibility permissions.
+- Full Disk Access or access to protected folders.
+- Keychain access where interactive prompts are needed. Keychain has its own access control system separate from TCC. But foreground terminal context helps auth tooling and prompt dialogs work correctly, because the prompts appear in the terminal session.
+
+### When It Does Not Help
+
+Running Process Launcher under a background supervisor like PM2, cron, or launchd defeats the TCC bridge. Those managers do not run inside an interactive GUI session, so their child processes inherit no TCC permissions.
+
+tmux and zellij can work, but only if the multiplexer server was itself started from an interactive GUI terminal. If the server was started by launchd, an SSH session, or a background automation script, the TCC inheritance chain is broken.
+
+launchd may work for signed application bundles with stable bundle IDs that have been granted TCC entitlements. But a plain script or binary launched by launchd is not the design target. It will almost certainly fail for TCC-sensitive jobs. Use a signed `.app` bundle if you need launchd scheduling with TCC access.
+
+### Start From The Right Session
+
+Start the launcher from a terminal you opened interactively:
+
+```bash
+# In Terminal.app or iTerm2:
+process-launcher start --config config/launcher.yaml
+
+# Or via tmux started from the same terminal:
+tmux new-session -d -s launcher 'process-launcher start --config config/launcher.yaml'
+```
+
+Do not add it to crontab, launchd plists, PM2 ecosystem files, or any supervisor that would start it without a GUI terminal ancestor.
+
 ## Private Overlay Pattern
 
 This repository is public-ready and generic. It ships a reusable skill in `skills/skill_process_launcher.md`, public docs, and fake configuration examples. A user workspace can keep a private overlay separately: aliases, real job recipes, private paths, domain-specific service labels, and operational runbooks. That overlay should point to this package but should not be committed here.

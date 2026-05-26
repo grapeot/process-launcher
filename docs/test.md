@@ -26,3 +26,7 @@ python -m pytest -v -m live_integration
 ## Marker Semantics
 
 `live_integration` tests may launch a real server process and submit commands through HTTP. The fixture checks whether port `7976` is free and skips if it is already occupied. The default test command should continue to avoid depending on a running external service.
+
+## TCC Testing Note
+
+TCC permissions cannot be tested in automated CI or unit tests. The permission model depends on the process ancestry chain, which is absent in non-interactive test runners. Manual verification from a terminal session is required to confirm that a launched child process inherits the expected TCC grants. The `live_integration` marker can be used for this manual check on a development machine.

@@ -34,6 +34,12 @@ Heartbeat events are JSONL files named by date. Output logs are one file per pro
 
 FastAPI generates the OpenAPI schema. Agents and scripts can inspect `/openapi.json` instead of relying on a separate hand-maintained API schema.
 
+### D7: TCC Foreground Process Constraint
+
+The launcher must run inside an interactive terminal session to inherit macOS TCC permissions. This is not a software limitation. It is a consequence of how macOS privacy controls audit the responsible process. The launcher is designed as a TCC bridge: start it once from a GUI terminal, then route all TCC-sensitive jobs through its API.
+
+Background supervisors (cron, launchd, PM2) cannot provide the required GUI ancestry. Multiplexers (tmux, zellij) work only if their server was started from an interactive GUI terminal. This constraint is a deployment requirement, not a feature gap.
+
 ## Data Flow
 
 ```text
@@ -48,6 +54,8 @@ caller -> GET /logs/output/{file} -> local output log
 ## Security Model
 
 The service is a trusted-local tool. A caller that can reach the API can run commands as the launcher user. Public deployments or shared machines need an additional security layer before exposing the API beyond localhost.
+
+macOS TCC adds a deployment-level security constraint. The launcher must be started from an interactive GUI terminal to grant its children access to TCC-protected capabilities. Background startup methods (cron, launchd, PM2) bypass the GUI ancestry chain and will cause TCC-sensitive jobs to fail silently or with denied-permission errors.
 
 ## Public And Private Layers
 
