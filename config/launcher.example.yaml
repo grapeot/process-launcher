@@ -1,0 +1,19 @@
+server:
+  host: 127.0.0.1
+  port: 7997
+
+logging:
+  dir: logs
+  heartbeat_retention_days: 30
+  output_retention_days: 30
+
+services:
+  demo_service:
+    label: demo_service
+    command: ["python", "-m", "http.server", "8080"]
+    cwd: /path/to/demo/project
+    env:
+      DEMO_MODE: development
+    restart_delay: 10
+    max_restarts: 3
+    restart_window: 60
