@@ -21,6 +21,8 @@ python -m pytest -v -m live_integration
 - Service monitor restart behavior and circuit breaker behavior.
 - Heartbeat and output log writing, filtering, and retention cleanup.
 - FastAPI endpoints for health, process control, scheduled jobs, services, logs, and OpenAPI.
+- SQLite schema migration and durable scheduled job recovery.
+- Misfire policies for jobs whose `run_at` passes while the launcher is down.
 - Live HTTP behavior through the `live_integration` fixture.
 
 ## Marker Semantics

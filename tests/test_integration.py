@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -99,3 +100,76 @@ async def test_launcher_restart_preserves_nothing(tmp_path: Path) -> None:
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app_two), base_url="http://test") as client_two:
         assert (await client_two.get("/processes")).json() == []
     await shutdown_app_state(app_two)
+
+
+@pytest.mark.asyncio
+async def test_launcher_restart_recovers_pending_scheduled_job(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_path = config_dir / "launcher.yaml"
+    config_path.write_text(yaml.safe_dump({"logging": {"dir": "logs"}, "storage": {"sqlite_path": "state/launcher.db"}, "services": {}}), encoding="utf-8")
+
+    app_one: FastAPI = create_app(config_path=config_path, config=load_config(config_path))
+    await initialize_app_state(app_one, load_config(config_path), config_path)
+    run_at = datetime.now() + timedelta(seconds=0.4)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app_one), base_url="http://test") as client_one:
+        response = await client_one.post(
+            "/run",
+            json={"command": [sys.executable, "-c", "print('recovered')"], "label": "recover_me", "run_at": run_at.isoformat()},
+        )
+        assert response.status_code == 200
+    await shutdown_app_state(app_one)
+
+    app_two: FastAPI = create_app(config_path=config_path, config=load_config(config_path))
+    await initialize_app_state(app_two, load_config(config_path), config_path)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app_two), base_url="http://test") as client_two:
+            deadline = asyncio.get_running_loop().time() + 3.0
+            while asyncio.get_running_loop().time() < deadline:
+                jobs = (await client_two.get("/scheduled")).json()
+                recovered = [job for job in jobs if job["label"] == "recover_me"]
+                if recovered and recovered[0]["status"] == "completed":
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                raise AssertionError("scheduled job did not recover and complete")
+
+            processes = (await client_two.get("/processes")).json()
+            assert any(process["label"] == "recover_me" for process in processes)
+    finally:
+        await shutdown_app_state(app_two)
+
+
+@pytest.mark.asyncio
+async def test_launcher_restart_applies_skip_misfire_policy(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_path = config_dir / "launcher.yaml"
+    config_path.write_text(yaml.safe_dump({"logging": {"dir": "logs"}, "storage": {"sqlite_path": "state/launcher.db"}, "services": {}}), encoding="utf-8")
+
+    app_one: FastAPI = create_app(config_path=config_path, config=load_config(config_path))
+    await initialize_app_state(app_one, load_config(config_path), config_path)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app_one), base_url="http://test") as client_one:
+        response = await client_one.post(
+            "/run",
+            json={
+                "command": [sys.executable, "-c", "print('missed')"],
+                "label": "skip_me",
+                "run_at": (datetime.now() + timedelta(seconds=0.2)).isoformat(),
+                "misfire_policy": "skip",
+            },
+        )
+        assert response.status_code == 200
+    await shutdown_app_state(app_one)
+    await asyncio.sleep(0.3)
+
+    app_two: FastAPI = create_app(config_path=config_path, config=load_config(config_path))
+    await initialize_app_state(app_two, load_config(config_path), config_path)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app_two), base_url="http://test") as client_two:
+            jobs = (await client_two.get("/scheduled")).json()
+            skipped = [job for job in jobs if job["label"] == "skip_me"]
+            assert skipped[0]["status"] == "missed"
+            assert (await client_two.get("/processes")).json() == []
+    finally:
+        await shutdown_app_state(app_two)

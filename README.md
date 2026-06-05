@@ -9,7 +9,7 @@ The server binds to `127.0.0.1` by default. It accepts arbitrary commands from l
 - `POST /run` starts one-off commands and returns a PID plus output log path.
 - `GET /processes` and `GET /processes/{pid}` report tracked process state.
 - `GET /processes/{pid}/output` reads captured stdout and stderr.
-- `delay_seconds` schedules an in-memory delayed launch that can be listed and cancelled.
+- `delay_seconds` schedules a durable delayed launch that can be listed, cancelled, and recovered after restart.
 - Always-on services can be configured with restart delay, restart window, and circuit breaker limits.
 - Heartbeat and output logs are retained locally and ignored by git.
 

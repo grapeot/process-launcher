@@ -69,7 +69,7 @@ curl -sf http://127.0.0.1:7997/processes
 curl -sf http://127.0.0.1:7997/processes/{pid}/output
 ```
 
-Schedule and cancel an in-memory delayed launch:
+Schedule and cancel a durable delayed launch:
 
 ```bash
 curl -sf -X POST http://127.0.0.1:7997/run \

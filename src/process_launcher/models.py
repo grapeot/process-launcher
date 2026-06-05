@@ -4,8 +4,9 @@ import uuid
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from typing import Self
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ProcessStatus(str, Enum):
@@ -35,7 +36,15 @@ class RunRequest(BaseModel):
     label: str | None = None
     always_on: bool = False
     timeout: float | None = Field(default=None, gt=0)
-    delay_seconds: float | None = Field(default=None, ge=0, description="Delay execution by N seconds. Lost on restart.")
+    delay_seconds: float | None = Field(default=None, ge=0, description="Delay execution by N seconds. Persisted across restarts.")
+    run_at: datetime | None = Field(default=None, description="Absolute time to run the command.")
+    misfire_policy: "MisfirePolicy" = Field(default="run_immediately")
+
+    @model_validator(mode="after")
+    def validate_schedule(self) -> Self:
+        if self.delay_seconds is not None and self.delay_seconds > 0 and self.run_at is not None:
+            raise ValueError("delay_seconds and run_at cannot both be set")
+        return self
 
 
 class RunResponse(BaseModel):
@@ -54,6 +63,10 @@ class LoggingConfig(BaseModel):
     dir: str = "logs"
     heartbeat_retention_days: int = 30
     output_retention_days: int = 30
+
+
+class StorageConfig(BaseModel):
+    sqlite_path: str = "state/launcher.db"
 
 
 class ServiceConfig(BaseModel):
@@ -87,6 +100,7 @@ class ServiceConfig(BaseModel):
 class LauncherConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
     services: dict[str, ServiceConfig] = Field(default_factory=dict)
 
 
@@ -94,15 +108,30 @@ class ScheduledStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
+    FAILED = "failed"
     CANCELLED = "cancelled"
+    MISSED = "missed"
+
+
+class MisfirePolicy(str, Enum):
+    RUN_IMMEDIATELY = "run_immediately"
+    SKIP = "skip"
+    FAIL = "fail"
 
 
 class ScheduledJob(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     label: str | None = None
-    command: str
+    command: list[str] | str
     cwd: str | None = None
+    env: dict[str, str] = Field(default_factory=dict)
+    timeout: float | None = None
     scheduled_at: datetime
     run_at: datetime
     status: ScheduledStatus = ScheduledStatus.PENDING
+    misfire_policy: MisfirePolicy = MisfirePolicy.RUN_IMMEDIATELY
     result_pid: int | None = None
+    last_error: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    cancelled_at: datetime | None = None
