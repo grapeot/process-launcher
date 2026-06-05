@@ -7,6 +7,9 @@ logging:
   heartbeat_retention_days: 30
   output_retention_days: 30
 
+storage:
+  sqlite_path: state/launcher.db
+
 services:
   demo_service:
     label: demo_service

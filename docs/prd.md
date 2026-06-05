@@ -6,7 +6,7 @@ Local automation often needs a small trusted process to start commands, track th
 
 On macOS, an additional constraint comes from TCC (Transparency Consent and Control) privacy controls. The system restricts access to Microphone, Camera, Screen Recording, Accessibility, Full Disk Access, and protected folders. These checks look at the responsible process and its GUI application ancestry. A child process only inherits TCC permissions if its parent chain leads back to a trusted GUI application that the user has granted permission to.
 
-Process Launcher provides both the control surface and a TCC permission bridge. It is intentionally narrow: receive a command, start a child process, capture output, record lifecycle events, and expose the current in-memory state. Started from an interactive terminal, every child it launches inherits that terminal's TCC grants.
+Process Launcher provides both the control surface and a TCC permission bridge. It is intentionally narrow: receive a command, start a child process, capture output, record lifecycle events, expose current process state, and persist delayed jobs that must survive launcher restarts. Started from an interactive terminal, every child it launches inherits that terminal's TCC grants.
 
 ## Goals
 
@@ -14,15 +14,18 @@ Process Launcher provides both the control surface and a TCC permission bridge. 
 - Track process status, exit code, timestamps, labels, and output file paths.
 - Capture stdout and stderr into local log files.
 - Record heartbeat events as JSONL for audit and troubleshooting.
-- Support in-memory delayed launches that can be listed and cancelled while pending.
+- Support durable delayed launches that can be listed, cancelled while pending, and recovered after launcher or machine restarts.
+- Support absolute `run_at` scheduling for cross-day jobs.
 - Support a small set of configured always-on services with restart and circuit-breaker behavior.
 - Provide an OpenAPI schema for human scripts and AI agents.
 
 ## Non-Goals
 
 - Process Launcher is not a distributed job queue.
-- It does not persist process state across restarts.
+- It does not recover arbitrary child process handles across restarts.
 - It does not implement recurring schedules; use cron, systemd timers, or another scheduler to call the API.
+- It does not replace YAML configuration with SQLite. YAML remains the bootstrap and declared-service source.
+- It does not support API-created always-on services. Always-on services are declarative-only and must be defined in YAML.
 - It does not send notifications.
 - It does not sandbox commands.
 - It is not designed to be exposed to untrusted networks.
@@ -45,6 +48,9 @@ logging:
   heartbeat_retention_days: 30
   output_retention_days: 30
 
+storage:
+  sqlite_path: state/launcher.db
+
 services:
   demo_service:
     label: demo_service
@@ -62,16 +68,14 @@ Private paths, real service names, secrets, and local job recipes belong in the 
 ## API Surface
 
 - `GET /health` reports server liveness.
-- `POST /run` starts a command immediately or schedules a delayed in-memory launch.
+- `POST /run` starts a command immediately or creates a durable scheduled launch with `delay_seconds` or `run_at`.
 - `GET /scheduled` lists delayed jobs.
 - `POST /scheduled/{job_id}/cancel` cancels a pending delayed job.
 - `GET /processes` lists tracked processes.
 - `GET /processes/{pid}` returns one tracked process.
 - `POST /processes/{pid}/stop` terminates a tracked process.
 - `GET /processes/{pid}/output` reads captured output.
-- `GET /services` lists configured or ad hoc always-on services.
-- `POST /services/{label}/restart` restarts a service.
-- `POST /services/{label}/reset` resets a service circuit breaker.
+- `POST /declared-services/{label}/restart` restarts one YAML-declared always-on service.
 - `GET /logs/heartbeat` reads heartbeat events.
 - `GET /logs/output` lists output log files.
 - `GET /logs/output/{filename}` reads one output log file.
@@ -80,3 +84,27 @@ Private paths, real service names, secrets, and local job recipes belong in the 
 ## Private Overlay Pattern
 
 The public repository contains the generic tool, tests, docs, and skill. A private workspace can maintain overlays such as job aliases, real service recipes, local paths, private domains, notification policies, and operational runbooks. This keeps the package reusable while allowing a user-specific workflow to stay private.
+
+## Durable Scheduling
+
+Delayed jobs are stored in SQLite under `storage.sqlite_path`, relative to the config base directory when a relative path is used. On startup, Process Launcher reloads `pending` jobs and schedules them again. `completed`, `failed`, `cancelled`, and `missed` jobs remain queryable but are not reloaded.
+
+A scheduled job is `completed` only after its child process exits with code `0`. If the child process exits non-zero, is killed, or cannot be started, the scheduled job becomes `failed` and records `last_error`. Starting the child process successfully is not enough to mark the scheduled job complete.
+
+Callers should dry-run commands before scheduling whenever the target CLI supports it. Dry runs catch missing credentials, incompatible Python versions, invalid paths, and malformed arguments before the durable job is committed. If the target CLI has no dry-run mode, the caller should make that risk explicit and let the user decide whether to schedule anyway. Process Launcher does not enforce dry-run policy because it accepts arbitrary commands and cannot know the correct dry-run flag for each tool.
+
+If a pending job's `run_at` time has already passed while the launcher was down, `misfire_policy` decides what happens:
+
+- `run_immediately` starts the job during recovery.
+- `skip` marks the job as `missed`.
+- `fail` marks the job as `failed` with an explanatory error.
+
+If the launcher restarts while a scheduled job is `running`, the next startup marks that job `failed` because the new launcher process no longer owns a reliable process handle.
+
+## Declarative Always-On Services
+
+Always-on services are a product-level declaration, not a runtime injection API. They must be defined in `config/launcher.yaml` under `services:`. This keeps long-lived local daemons visible in the bootstrap config, avoids hidden persistent service state, and keeps `/run` focused on one-off or scheduled command execution.
+
+There is no `/services` list/create/reset API surface. Declared services are launched as ordinary tracked child processes, so callers inspect them through `/processes`, `/processes/{pid}/output`, `/logs/heartbeat`, and `/logs/output`.
+
+The only service-specific API is `POST /declared-services/{label}/restart`. It exists for operational recovery of YAML-declared services whose device discovery or external connections need a fresh start. It cannot create services, cannot list services, and returns 404 for labels that are not present in YAML.

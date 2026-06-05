@@ -56,10 +56,8 @@ async def status(url: str | None, config_path: str) -> None:
     base_url = url or _base_url_from_config(config_path)
     async with httpx.AsyncClient(base_url=base_url, timeout=5.0) as client:
         processes = await client.get("/processes")
-        services = await client.get("/services")
         processes.raise_for_status()
-        services.raise_for_status()
-        print(json.dumps({"processes": processes.json(), "services": services.json()}, indent=2))
+        print(json.dumps({"processes": processes.json()}, indent=2))
 
 
 def _base_url_from_config(config_path: str) -> str:

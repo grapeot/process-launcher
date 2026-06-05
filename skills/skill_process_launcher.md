@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Use Process Launcher when a local workflow needs to start a command through a trusted localhost API, inspect process status, read output logs, or manage a small always-on service.
+Use Process Launcher when a local workflow needs to start a command through a trusted localhost API, inspect process status, read output logs, schedule durable one-shot jobs, or run a small set of YAML-declared always-on services.
 
 ## Why Process Launcher Exists (macOS TCC)
 
@@ -27,7 +27,7 @@ Create local config from the public example:
 cp config/launcher.example.yaml config/launcher.yaml
 ```
 
-Put real paths, service labels, and `.env` references only in the ignored local config or in a private overlay.
+Put real paths, service labels, `.env` references, and local SQLite paths only in the ignored local config or in a private overlay. Always-on services are declarative-only; do not create them through HTTP. Inspect them through the regular process and log endpoints. Use `POST /declared-services/{label}/restart` only for a service already present in YAML.
 
 ## Start The Launcher
 
@@ -47,6 +47,8 @@ python -m process_launcher start --config config/launcher.yaml
 **Do not** start the launcher from cron, launchd, PM2, or any supervisor that lacks a GUI terminal ancestor. Jobs launched through those parents will not have TCC access, which is the main reason to use this tool on macOS.
 
 ## Common Calls
+
+Before scheduling a durable job, run the target CLI's dry-run/check mode when it has one. This catches missing credentials, bad paths, bad Python versions, and malformed arguments before the job is persisted. If the target CLI has no dry-run mode, tell the user that the schedule will be created without preflight validation and that the underlying command may fail later.
 
 Health check:
 
@@ -69,24 +71,37 @@ curl -sf http://127.0.0.1:7997/processes
 curl -sf http://127.0.0.1:7997/processes/{pid}/output
 ```
 
-Schedule and cancel an in-memory delayed launch:
+Schedule and cancel a durable delayed launch:
 
 ```bash
 curl -sf -X POST http://127.0.0.1:7997/run \
   -H 'Content-Type: application/json' \
   -d '{"command": ["python", "-c", "print(\"later\")"], "label": "later", "delay_seconds": 300}'
 
+curl -sf -X POST http://127.0.0.1:7997/run \
+  -H 'Content-Type: application/json' \
+  -d '{"command": ["python", "daily.py"], "label": "absolute_time", "run_at": "2026-06-10T09:00:00-07:00", "misfire_policy": "run_immediately"}'
+
 curl -sf http://127.0.0.1:7997/scheduled
 curl -sf -X POST http://127.0.0.1:7997/scheduled/{job_id}/cancel
 ```
 
-Inspect services and logs:
+Scheduled jobs are persisted in SQLite and recovered on launcher restart. If `run_at` passed while the launcher was down, `misfire_policy` controls recovery: `run_immediately`, `skip`, or `fail`. A scheduled job becomes `completed` only after its child process exits with code `0`; non-zero exits become `failed`.
+
+Inspect logs:
 
 ```bash
-curl -sf http://127.0.0.1:7997/services
 curl -sf http://127.0.0.1:7997/logs/heartbeat
 curl -sf http://127.0.0.1:7997/logs/output
 ```
+
+Restart a YAML-declared service:
+
+```bash
+curl -sf -X POST http://127.0.0.1:7997/declared-services/{label}/restart
+```
+
+There is no service list/create/reset API. Use `/processes` and logs to inspect declared services after startup or restart.
 
 ## Private Overlay Pattern
 

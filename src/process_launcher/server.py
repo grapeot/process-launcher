@@ -12,9 +12,10 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 
 from .config import load_config
 from .log import HeartbeatLogger, OutputLogger
-from .models import LauncherConfig, ProcessInfo, RunRequest, RunResponse, ScheduledJob, ScheduledStatus, ServiceConfig
+from .models import LauncherConfig, MisfirePolicy, ProcessInfo, RunRequest, RunResponse, ScheduledJob, ScheduledStatus
 from .process import ProcessManager
 from .service_monitor import ServiceMonitor
+from .storage import SQLiteStore
 
 
 def create_app(config_path: str | Path | None = None, config: LauncherConfig | None = None) -> FastAPI:
@@ -44,32 +45,22 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
     @app.post("/run", response_model=RunResponse)
     async def run_command(request: RunRequest) -> RunResponse:
         process_manager: ProcessManager = app.state.process_manager
-        service_monitor: ServiceMonitor = app.state.service_monitor
-        if request.always_on:
-            if not request.label:
-                raise HTTPException(status_code=400, detail="label is required for always_on services")
-            config_obj = ServiceConfig(label=request.label, command=request.command, cwd=request.cwd, env=request.env)
-            process = await service_monitor.start_ad_hoc_service(config_obj)
-            return RunResponse(
-                pid=process.pid,
-                label=process.label,
-                started_at=process.started_at,
-                output_file=process.output_file,
-            )
-        if request.delay_seconds and request.delay_seconds > 0:
+        if (request.delay_seconds and request.delay_seconds > 0) or request.run_at is not None:
             scheduled_at = datetime.now()
-            run_at = scheduled_at + timedelta(seconds=request.delay_seconds)
+            run_at = request.run_at or scheduled_at + timedelta(seconds=request.delay_seconds or 0)
             job = ScheduledJob(
                 label=request.label,
-                command=request.command if isinstance(request.command, str) else " ".join(request.command),
+                command=request.command,
                 cwd=request.cwd,
+                env=request.env,
+                timeout=request.timeout,
                 scheduled_at=scheduled_at,
                 run_at=run_at,
+                misfire_policy=request.misfire_policy,
             )
             scheduled_manager: ScheduledManager = app.state.scheduled_manager
             scheduled_manager.add(job)
-            task = asyncio.create_task(_delayed_run(process_manager, scheduled_manager, job, request, request.delay_seconds))
-            scheduled_manager.set_task(job.id, task)
+            scheduled_manager.schedule(process_manager, job, request)
             return RunResponse(
                 pid=0,
                 label=request.label,
@@ -122,26 +113,13 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="process not found") from exc
 
-    @app.get("/services")
-    async def list_services() -> list[dict[str, object]]:
-        service_monitor: ServiceMonitor = app.state.service_monitor
-        return service_monitor.list_services()
-
-    @app.post("/services/{label}/restart", response_model=ProcessInfo)
-    async def restart_service(label: str) -> ProcessInfo:
+    @app.post("/declared-services/{label}/restart", response_model=ProcessInfo)
+    async def restart_declared_service(label: str) -> ProcessInfo:
         service_monitor: ServiceMonitor = app.state.service_monitor
         try:
             return await service_monitor.restart_service(label)
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail="service not found") from exc
-
-    @app.post("/services/{label}/reset", response_model=ProcessInfo)
-    async def reset_service(label: str) -> ProcessInfo:
-        service_monitor: ServiceMonitor = app.state.service_monitor
-        try:
-            return await service_monitor.reset_circuit_breaker(label)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="service not found") from exc
+            raise HTTPException(status_code=404, detail="declared service not found") from exc
 
     @app.get("/logs/heartbeat")
     async def get_heartbeat_logs(
@@ -180,27 +158,48 @@ async def _terminate_self() -> None:
 
 
 class ScheduledManager:
-    """In-memory tracker for delayed/scheduled jobs."""
+    """Tracker and recovery scheduler for durable scheduled jobs."""
 
-    def __init__(self) -> None:
+    def __init__(self, store: SQLiteStore) -> None:
+        self.store = store
         self._jobs: dict[str, ScheduledJob] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        for job in self.store.list_scheduled_jobs():
+            self._jobs[job.id] = job
 
     def add(self, job: ScheduledJob) -> None:
         self._jobs[job.id] = job
+        self.store.upsert_scheduled_job(job)
 
     def set_task(self, job_id: str, task: asyncio.Task[None]) -> None:
         self._tasks[job_id] = task
 
+    def schedule(self, process_manager: ProcessManager, job: ScheduledJob, request: RunRequest, *, delay: float | None = None) -> None:
+        actual_delay = delay if delay is not None else max((job.run_at - datetime.now()).total_seconds(), 0.0)
+        task = asyncio.create_task(_delayed_run(process_manager, self, job, request, actual_delay))
+        self.set_task(job.id, task)
+
     def mark_running(self, job_id: str, pid: int) -> None:
         job = self._jobs.get(job_id)
         if job:
-            self._jobs[job_id] = job.model_copy(update={"status": ScheduledStatus.RUNNING, "result_pid": pid})
+            self._update_job(job.model_copy(update={"status": ScheduledStatus.RUNNING, "result_pid": pid, "started_at": datetime.now()}))
 
     def mark_completed(self, job_id: str) -> None:
         job = self._jobs.get(job_id)
         if job:
-            self._jobs[job_id] = job.model_copy(update={"status": ScheduledStatus.COMPLETED})
+            self._update_job(job.model_copy(update={"status": ScheduledStatus.COMPLETED, "completed_at": datetime.now()}))
+        self._tasks.pop(job_id, None)
+
+    def mark_failed(self, job_id: str, error: str) -> None:
+        job = self._jobs.get(job_id)
+        if job:
+            self._update_job(job.model_copy(update={"status": ScheduledStatus.FAILED, "last_error": error, "completed_at": datetime.now()}))
+        self._tasks.pop(job_id, None)
+
+    def mark_missed(self, job_id: str, error: str) -> None:
+        job = self._jobs.get(job_id)
+        if job:
+            self._update_job(job.model_copy(update={"status": ScheduledStatus.MISSED, "last_error": error, "completed_at": datetime.now()}))
         self._tasks.pop(job_id, None)
 
     def cancel(self, job_id: str) -> ScheduledJob:
@@ -212,11 +211,46 @@ class ScheduledManager:
         task = self._tasks.pop(job_id, None)
         if task and not task.done():
             task.cancel()
-        self._jobs[job_id] = job.model_copy(update={"status": ScheduledStatus.CANCELLED})
+        self._update_job(job.model_copy(update={"status": ScheduledStatus.CANCELLED, "cancelled_at": datetime.now()}))
         return self._jobs[job_id]
 
     def list_jobs(self) -> list[ScheduledJob]:
         return sorted(self._jobs.values(), key=lambda j: j.scheduled_at)
+
+    def recover_pending(self, process_manager: ProcessManager) -> None:
+        self.store.mark_stale_running_jobs_failed()
+        for job in self.store.list_scheduled_jobs():
+            self._jobs[job.id] = job
+        for job in self.store.list_pending_scheduled_jobs():
+            if job.run_at > datetime.now():
+                self.schedule(process_manager, job, self._request_from_job(job))
+            elif job.misfire_policy == MisfirePolicy.RUN_IMMEDIATELY:
+                self.schedule(process_manager, job, self._request_from_job(job), delay=0.0)
+            elif job.misfire_policy == MisfirePolicy.SKIP:
+                self.mark_missed(job.id, "scheduled run_at passed while launcher was down")
+            elif job.misfire_policy == MisfirePolicy.FAIL:
+                self.mark_failed(job.id, "scheduled run_at passed while launcher was down")
+
+    def shutdown(self) -> None:
+        for task in self._tasks.values():
+            if not task.done():
+                task.cancel()
+
+    def close(self) -> None:
+        self.store.close()
+
+    def _update_job(self, job: ScheduledJob) -> None:
+        self._jobs[job.id] = job
+        self.store.update_scheduled_job(job)
+
+    def _request_from_job(self, job: ScheduledJob) -> RunRequest:
+        return RunRequest(
+            command=job.command,
+            cwd=job.cwd,
+            env=job.env,
+            label=job.label,
+            timeout=job.timeout,
+        )
 
 
 async def _delayed_run(
@@ -232,11 +266,20 @@ async def _delayed_run(
         return
     scheduled_manager.mark_running(job.id, pid=0)
     try:
-        response = await process_manager.start_process(request)
+        response = await process_manager.start_process(
+            request,
+            on_exit=lambda info: _mark_scheduled_exit(scheduled_manager, job.id, info),
+        )
         scheduled_manager.mark_running(job.id, pid=response.pid)
-        scheduled_manager.mark_completed(job.id)
-    except Exception:
-        scheduled_manager.mark_completed(job.id)
+    except Exception as exc:
+        scheduled_manager.mark_failed(job.id, str(exc))
+
+
+def _mark_scheduled_exit(scheduled_manager: ScheduledManager, job_id: str, info: ProcessInfo) -> None:
+    if info.exit_code == 0 and info.status.value == "exited":
+        scheduled_manager.mark_completed(job_id)
+    else:
+        scheduled_manager.mark_failed(job_id, f"process exited with status={info.status.value} exit_code={info.exit_code}")
 
 
 async def initialize_app_state(app: FastAPI, launcher_config: LauncherConfig, config_path: Path | None = None) -> None:
@@ -245,12 +288,16 @@ async def initialize_app_state(app: FastAPI, launcher_config: LauncherConfig, co
 
     base_dir = config_path.parent.parent if config_path else Path.cwd()
     log_dir = base_dir / launcher_config.logging.dir
+    sqlite_path = Path(launcher_config.storage.sqlite_path)
+    if not sqlite_path.is_absolute():
+        sqlite_path = base_dir / sqlite_path
     heartbeat_logger = HeartbeatLogger(log_dir, retention_days=launcher_config.logging.heartbeat_retention_days)
     output_logger = OutputLogger(log_dir, retention_days=launcher_config.logging.output_retention_days)
+    sqlite_store = SQLiteStore(sqlite_path)
     process_manager = ProcessManager(heartbeat_logger, output_logger)
     service_monitor = ServiceMonitor(process_manager, heartbeat_logger)
     service_monitor.register_services(launcher_config.services)
-    scheduled_manager = ScheduledManager()
+    scheduled_manager = ScheduledManager(sqlite_store)
 
     app.state.launcher_config = launcher_config
     app.state.heartbeat_logger = heartbeat_logger
@@ -259,16 +306,22 @@ async def initialize_app_state(app: FastAPI, launcher_config: LauncherConfig, co
     app.state.service_monitor = service_monitor
     app.state.scheduled_manager = scheduled_manager
 
+    scheduled_manager.recover_pending(process_manager)
     await service_monitor.start_registered_services()
 
 
 async def shutdown_app_state(app: FastAPI) -> None:
     service_monitor: ServiceMonitor | None = getattr(app.state, "service_monitor", None)
     process_manager: ProcessManager | None = getattr(app.state, "process_manager", None)
+    scheduled_manager: ScheduledManager | None = getattr(app.state, "scheduled_manager", None)
+    if scheduled_manager is not None:
+        scheduled_manager.shutdown()
     if service_monitor is not None:
         await service_monitor.shutdown()
     if process_manager is not None:
         await process_manager.stop_all()
+    if scheduled_manager is not None:
+        scheduled_manager.close()
 
     for attr in ("service_monitor", "process_manager", "heartbeat_logger", "output_logger", "launcher_config", "scheduled_manager"):
         if hasattr(app.state, attr):

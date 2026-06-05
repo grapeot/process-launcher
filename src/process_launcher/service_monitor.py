@@ -41,10 +41,6 @@ class ServiceMonitor:
             if runtime.restarting_task is not None:
                 runtime.restarting_task.cancel()
 
-    async def start_ad_hoc_service(self, config: ServiceConfig) -> ProcessInfo:
-        self._services[config.label] = ServiceRuntime(config=config)
-        return await self._start_service(config.label)
-
     async def restart_service(self, label: str) -> ProcessInfo:
         runtime = self._get_runtime(label)
         runtime.restart_count = 0

@@ -116,35 +116,24 @@ async def test_get_output_tail(client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_services(client: httpx.AsyncClient) -> None:
-    response = await client.get("/services")
-    assert response.status_code == 200
-    assert isinstance(response.json(), list)
-
-
-@pytest.mark.asyncio
-async def test_restart_service(client: httpx.AsyncClient, app) -> None:
-    await client.post(
+async def test_api_based_always_on_is_rejected(client: httpx.AsyncClient) -> None:
+    response = await client.post(
         "/run",
         json={"command": [sys.executable, "-c", "import time; time.sleep(5)"], "label": "demo", "always_on": True},
     )
-    restarted = await client.post("/services/demo/restart")
-    assert restarted.status_code == 200
-    assert restarted.json()["label"] == "demo"
-    await app.state.process_manager.stop_all()
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_reset_service(client: httpx.AsyncClient, app) -> None:
-    await client.post(
-        "/run",
-        json={"command": [sys.executable, "-c", "import time; time.sleep(5)"], "label": "broken", "always_on": True},
-    )
-    process = next(item for item in app.state.service_monitor.list_services() if item["label"] == "broken")
-    assert process["status"] == "running"
-    reset = await client.post("/services/broken/reset")
-    assert reset.status_code == 200
-    await app.state.process_manager.stop_all()
+async def test_services_endpoint_not_available(client: httpx.AsyncClient) -> None:
+    response = await client.get("/services")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_restart_unknown_declared_service_returns_404(client: httpx.AsyncClient) -> None:
+    response = await client.post("/declared-services/missing/restart")
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -232,3 +221,20 @@ async def test_scheduled_job_completes_after_delay(client: httpx.AsyncClient) ->
     assert len(jobs) == 1
     assert jobs[0]["status"] == "completed"
     assert jobs[0]["result_pid"] is not None and jobs[0]["result_pid"] > 0
+
+
+@pytest.mark.asyncio
+async def test_scheduled_job_fails_when_process_exits_nonzero(client: httpx.AsyncClient) -> None:
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "import sys; sys.exit(7)"], "label": "fails", "delay_seconds": 0.1},
+    )
+    deadline = asyncio.get_running_loop().time() + 3.0
+    while asyncio.get_running_loop().time() < deadline:
+        scheduled = await client.get("/scheduled")
+        jobs = [j for j in scheduled.json() if j["label"] == "fails"]
+        if jobs and jobs[0]["status"] == "failed":
+            assert "exit_code=7" in jobs[0]["last_error"]
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("scheduled job did not fail after process exit")

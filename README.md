@@ -9,8 +9,10 @@ The server binds to `127.0.0.1` by default. It accepts arbitrary commands from l
 - `POST /run` starts one-off commands and returns a PID plus output log path.
 - `GET /processes` and `GET /processes/{pid}` report tracked process state.
 - `GET /processes/{pid}/output` reads captured stdout and stderr.
-- `delay_seconds` schedules an in-memory delayed launch that can be listed and cancelled.
-- Always-on services can be configured with restart delay, restart window, and circuit breaker limits.
+- `delay_seconds` schedules a durable delayed launch that can be listed, cancelled, and recovered after restart.
+- Scheduled jobs complete only when their child process exits with code `0`; failed child processes mark the scheduled job failed.
+- Dry-run the target command before scheduling when the CLI supports it. If no dry-run exists, make that risk explicit before creating a durable schedule.
+- Always-on services can be declared in YAML with restart delay, restart window, and circuit breaker limits.
 - Heartbeat and output logs are retained locally and ignored by git.
 
 ## Install
@@ -36,6 +38,8 @@ cp config/launcher.example.yaml config/launcher.yaml
 ```
 
 `config/launcher.yaml` is intentionally ignored by git. Keep real local paths, service names, tokens, and `.env` references there. The tracked repository only ships `config/launcher.example.yaml` with generic placeholder values.
+
+Always-on services are declarative-only. Define them under `services:` in YAML; `/run` does not create always-on services dynamically, and there is no service list/create API. Inspect declared services through the regular process and log endpoints. Use `POST /declared-services/{label}/restart` only to restart a service already declared in YAML.
 
 ## Run
 
