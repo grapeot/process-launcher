@@ -131,6 +131,12 @@ async def test_services_endpoint_not_available(client: httpx.AsyncClient) -> Non
 
 
 @pytest.mark.asyncio
+async def test_restart_unknown_declared_service_returns_404(client: httpx.AsyncClient) -> None:
+    response = await client.post("/declared-services/missing/restart")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_openapi_spec(client: httpx.AsyncClient) -> None:
     response = await client.get("/openapi.json")
     assert response.status_code == 200

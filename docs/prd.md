@@ -75,6 +75,7 @@ Private paths, real service names, secrets, and local job recipes belong in the 
 - `GET /processes/{pid}` returns one tracked process.
 - `POST /processes/{pid}/stop` terminates a tracked process.
 - `GET /processes/{pid}/output` reads captured output.
+- `POST /declared-services/{label}/restart` restarts one YAML-declared always-on service.
 - `GET /logs/heartbeat` reads heartbeat events.
 - `GET /logs/output` lists output log files.
 - `GET /logs/output/{filename}` reads one output log file.
@@ -100,4 +101,6 @@ If the launcher restarts while a scheduled job is `running`, the next startup ma
 
 Always-on services are a product-level declaration, not a runtime injection API. They must be defined in `config/launcher.yaml` under `services:`. This keeps long-lived local daemons visible in the bootstrap config, avoids hidden persistent service state, and keeps `/run` focused on one-off or scheduled command execution.
 
-There is no `/services` API surface. Declared services are launched as ordinary tracked child processes, so callers inspect them through `/processes`, `/processes/{pid}/output`, `/logs/heartbeat`, and `/logs/output`.
+There is no `/services` list/create/reset API surface. Declared services are launched as ordinary tracked child processes, so callers inspect them through `/processes`, `/processes/{pid}/output`, `/logs/heartbeat`, and `/logs/output`.
+
+The only service-specific API is `POST /declared-services/{label}/restart`. It exists for operational recovery of YAML-declared services whose device discovery or external connections need a fresh start. It cannot create services, cannot list services, and returns 404 for labels that are not present in YAML.

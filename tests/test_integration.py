@@ -56,6 +56,9 @@ async def test_full_lifecycle(tmp_path: Path) -> None:
             run_response = await client.post("/run", json={"command": [sys.executable, "-c", "print('job')"], "label": "job"})
             pid = cast(int, run_response.json()["pid"])
             await wait_for_status(client, pid, "exited")
+            restart = await client.post("/declared-services/always/restart")
+            assert restart.status_code == 200
+            assert restart.json()["label"] == "always"
             heartbeat = await client.get("/logs/heartbeat", params={"label": "job"})
             assert len(heartbeat.json()) >= 2
     finally:

@@ -37,7 +37,7 @@ cp config/launcher.example.yaml config/launcher.yaml
 
 `config/launcher.yaml` is intentionally ignored by git. Keep real local paths, service names, tokens, and `.env` references there. The tracked repository only ships `config/launcher.example.yaml` with generic placeholder values.
 
-Always-on services are declarative-only. Define them under `services:` in YAML; `/run` does not create always-on services dynamically, and there is no service-specific HTTP management API. Inspect declared services through the regular process and log endpoints.
+Always-on services are declarative-only. Define them under `services:` in YAML; `/run` does not create always-on services dynamically, and there is no service list/create API. Inspect declared services through the regular process and log endpoints. Use `POST /declared-services/{label}/restart` only to restart a service already declared in YAML.
 
 ## Run
 

@@ -75,6 +75,11 @@ def test_services_endpoint_not_available(live_client):
     assert r.status_code == 404
 
 
+def test_declared_service_restart_not_found(live_client):
+    r = live_client.post("/declared-services/missing/restart")
+    assert r.status_code == 404
+
+
 def test_process_not_found(live_client):
     r = live_client.get("/processes/999999")
     assert r.status_code == 404

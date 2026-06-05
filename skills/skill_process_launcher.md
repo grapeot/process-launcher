@@ -27,7 +27,7 @@ Create local config from the public example:
 cp config/launcher.example.yaml config/launcher.yaml
 ```
 
-Put real paths, service labels, `.env` references, and local SQLite paths only in the ignored local config or in a private overlay. Always-on services are declarative-only; do not create or manage them through HTTP service endpoints. Inspect them through the regular process and log endpoints.
+Put real paths, service labels, `.env` references, and local SQLite paths only in the ignored local config or in a private overlay. Always-on services are declarative-only; do not create them through HTTP. Inspect them through the regular process and log endpoints. Use `POST /declared-services/{label}/restart` only for a service already present in YAML.
 
 ## Start The Launcher
 
@@ -92,6 +92,14 @@ Inspect logs:
 curl -sf http://127.0.0.1:7997/logs/heartbeat
 curl -sf http://127.0.0.1:7997/logs/output
 ```
+
+Restart a YAML-declared service:
+
+```bash
+curl -sf -X POST http://127.0.0.1:7997/declared-services/{label}/restart
+```
+
+There is no service list/create/reset API. Use `/processes` and logs to inspect declared services after startup or restart.
 
 ## Private Overlay Pattern
 

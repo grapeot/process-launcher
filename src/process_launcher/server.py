@@ -113,6 +113,14 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="process not found") from exc
 
+    @app.post("/declared-services/{label}/restart", response_model=ProcessInfo)
+    async def restart_declared_service(label: str) -> ProcessInfo:
+        service_monitor: ServiceMonitor = app.state.service_monitor
+        try:
+            return await service_monitor.restart_service(label)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="declared service not found") from exc
+
     @app.get("/logs/heartbeat")
     async def get_heartbeat_logs(
         limit: int = Query(default=100, ge=1, le=1000),
