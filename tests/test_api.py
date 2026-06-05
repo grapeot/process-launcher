@@ -221,3 +221,20 @@ async def test_scheduled_job_completes_after_delay(client: httpx.AsyncClient) ->
     assert len(jobs) == 1
     assert jobs[0]["status"] == "completed"
     assert jobs[0]["result_pid"] is not None and jobs[0]["result_pid"] > 0
+
+
+@pytest.mark.asyncio
+async def test_scheduled_job_fails_when_process_exits_nonzero(client: httpx.AsyncClient) -> None:
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "import sys; sys.exit(7)"], "label": "fails", "delay_seconds": 0.1},
+    )
+    deadline = asyncio.get_running_loop().time() + 3.0
+    while asyncio.get_running_loop().time() < deadline:
+        scheduled = await client.get("/scheduled")
+        jobs = [j for j in scheduled.json() if j["label"] == "fails"]
+        if jobs and jobs[0]["status"] == "failed":
+            assert "exit_code=7" in jobs[0]["last_error"]
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("scheduled job did not fail after process exit")

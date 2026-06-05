@@ -22,6 +22,10 @@ Tracked process handles stay in memory. Restarting the launcher starts with an e
 
 Delayed and absolute-time scheduled jobs are stored in SQLite. YAML remains the bootstrap config for server, logging, storage, and declared always-on services. SQLite owns runtime lifecycle records for scheduled work: `pending`, `running`, `completed`, `failed`, `cancelled`, and `missed`.
 
+Scheduled job completion follows the child process exit result. The scheduler marks a job `running` after it starts the child process, then waits for the process exit callback. Exit code `0` marks the job `completed`; non-zero exit, killed status, or start failure marks it `failed` with `last_error`. This keeps the scheduling API honest for commands that start successfully but fail immediately.
+
+Dry-run validation stays at the caller layer. Many scheduled commands are tool-specific CLIs with their own `--dry-run`, `--check`, or preview modes. The launcher cannot infer those flags from an arbitrary command safely, so it records and executes the command it receives. Agents and scripts should run the target command's dry-run path before creating a durable schedule. When no dry-run exists, they should disclose that limitation before scheduling.
+
 The database includes a `schema_migrations` table. Each migration runs once and leaves a permanent version record so future launcher versions can upgrade older database files predictably.
 
 ### D4: External Recurrence

@@ -10,6 +10,8 @@ The server binds to `127.0.0.1` by default. It accepts arbitrary commands from l
 - `GET /processes` and `GET /processes/{pid}` report tracked process state.
 - `GET /processes/{pid}/output` reads captured stdout and stderr.
 - `delay_seconds` schedules a durable delayed launch that can be listed, cancelled, and recovered after restart.
+- Scheduled jobs complete only when their child process exits with code `0`; failed child processes mark the scheduled job failed.
+- Dry-run the target command before scheduling when the CLI supports it. If no dry-run exists, make that risk explicit before creating a durable schedule.
 - Always-on services can be declared in YAML with restart delay, restart window, and circuit breaker limits.
 - Heartbeat and output logs are retained locally and ignored by git.
 

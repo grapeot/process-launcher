@@ -266,11 +266,20 @@ async def _delayed_run(
         return
     scheduled_manager.mark_running(job.id, pid=0)
     try:
-        response = await process_manager.start_process(request)
+        response = await process_manager.start_process(
+            request,
+            on_exit=lambda info: _mark_scheduled_exit(scheduled_manager, job.id, info),
+        )
         scheduled_manager.mark_running(job.id, pid=response.pid)
-        scheduled_manager.mark_completed(job.id)
     except Exception as exc:
         scheduled_manager.mark_failed(job.id, str(exc))
+
+
+def _mark_scheduled_exit(scheduled_manager: ScheduledManager, job_id: str, info: ProcessInfo) -> None:
+    if info.exit_code == 0 and info.status.value == "exited":
+        scheduled_manager.mark_completed(job_id)
+    else:
+        scheduled_manager.mark_failed(job_id, f"process exited with status={info.status.value} exit_code={info.exit_code}")
 
 
 async def initialize_app_state(app: FastAPI, launcher_config: LauncherConfig, config_path: Path | None = None) -> None:

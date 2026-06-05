@@ -89,6 +89,10 @@ The public repository contains the generic tool, tests, docs, and skill. A priva
 
 Delayed jobs are stored in SQLite under `storage.sqlite_path`, relative to the config base directory when a relative path is used. On startup, Process Launcher reloads `pending` jobs and schedules them again. `completed`, `failed`, `cancelled`, and `missed` jobs remain queryable but are not reloaded.
 
+A scheduled job is `completed` only after its child process exits with code `0`. If the child process exits non-zero, is killed, or cannot be started, the scheduled job becomes `failed` and records `last_error`. Starting the child process successfully is not enough to mark the scheduled job complete.
+
+Callers should dry-run commands before scheduling whenever the target CLI supports it. Dry runs catch missing credentials, incompatible Python versions, invalid paths, and malformed arguments before the durable job is committed. If the target CLI has no dry-run mode, the caller should make that risk explicit and let the user decide whether to schedule anyway. Process Launcher does not enforce dry-run policy because it accepts arbitrary commands and cannot know the correct dry-run flag for each tool.
+
 If a pending job's `run_at` time has already passed while the launcher was down, `misfire_policy` decides what happens:
 
 - `run_immediately` starts the job during recovery.

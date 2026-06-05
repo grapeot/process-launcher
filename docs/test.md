@@ -23,6 +23,7 @@ python -m pytest -v -m live_integration
 - FastAPI endpoints for health, process control, scheduled jobs, logs, and OpenAPI.
 - SQLite schema migration and durable scheduled job recovery.
 - Misfire policies for jobs whose `run_at` passes while the launcher is down.
+- Scheduled job status follows child process exit code: `0` completes, non-zero fails.
 - Live HTTP behavior through the `live_integration` fixture.
 
 ## Marker Semantics

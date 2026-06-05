@@ -48,6 +48,8 @@ python -m process_launcher start --config config/launcher.yaml
 
 ## Common Calls
 
+Before scheduling a durable job, run the target CLI's dry-run/check mode when it has one. This catches missing credentials, bad paths, bad Python versions, and malformed arguments before the job is persisted. If the target CLI has no dry-run mode, tell the user that the schedule will be created without preflight validation and that the underlying command may fail later.
+
 Health check:
 
 ```bash
@@ -84,7 +86,7 @@ curl -sf http://127.0.0.1:7997/scheduled
 curl -sf -X POST http://127.0.0.1:7997/scheduled/{job_id}/cancel
 ```
 
-Scheduled jobs are persisted in SQLite and recovered on launcher restart. If `run_at` passed while the launcher was down, `misfire_policy` controls recovery: `run_immediately`, `skip`, or `fail`.
+Scheduled jobs are persisted in SQLite and recovered on launcher restart. If `run_at` passed while the launcher was down, `misfire_policy` controls recovery: `run_immediately`, `skip`, or `fail`. A scheduled job becomes `completed` only after its child process exits with code `0`; non-zero exits become `failed`.
 
 Inspect logs:
 
