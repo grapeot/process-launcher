@@ -75,9 +75,6 @@ Private paths, real service names, secrets, and local job recipes belong in the 
 - `GET /processes/{pid}` returns one tracked process.
 - `POST /processes/{pid}/stop` terminates a tracked process.
 - `GET /processes/{pid}/output` reads captured output.
-- `GET /services` lists YAML-declared always-on services.
-- `POST /services/{label}/restart` restarts a service.
-- `POST /services/{label}/reset` resets a service circuit breaker.
 - `GET /logs/heartbeat` reads heartbeat events.
 - `GET /logs/output` lists output log files.
 - `GET /logs/output/{filename}` reads one output log file.
@@ -102,3 +99,5 @@ If the launcher restarts while a scheduled job is `running`, the next startup ma
 ## Declarative Always-On Services
 
 Always-on services are a product-level declaration, not a runtime injection API. They must be defined in `config/launcher.yaml` under `services:`. This keeps long-lived local daemons visible in the bootstrap config, avoids hidden persistent service state, and keeps `/run` focused on one-off or scheduled command execution.
+
+There is no `/services` API surface. Declared services are launched as ordinary tracked child processes, so callers inspect them through `/processes`, `/processes/{pid}/output`, `/logs/heartbeat`, and `/logs/output`.

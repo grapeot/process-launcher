@@ -32,7 +32,7 @@ Recurring schedules stay outside the launcher. Cron, systemd timers, launchd, or
 
 Always-on services use minimal restart logic because the launcher already owns the child process. Each service can set `restart_delay`, `max_restarts`, and `restart_window`. After repeated failures, the service enters `circuit_breaker` until a caller resets it.
 
-Declared services come from YAML. API-created always-on services are intentionally unsupported. This avoids hidden long-lived daemons created through `/run` and keeps the launcher split clear: YAML owns service desired state; SQLite owns scheduled job lifecycle state.
+Declared services come from YAML. API-created always-on services and service-specific HTTP management endpoints are intentionally unsupported. This avoids hidden long-lived daemons created through `/run` and keeps the launcher split clear: YAML owns service desired state; SQLite owns scheduled job lifecycle state. Once launched, declared services are ordinary tracked child processes for API purposes.
 
 ### D6: Logs Are Local Files
 

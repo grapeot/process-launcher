@@ -27,7 +27,7 @@ Create local config from the public example:
 cp config/launcher.example.yaml config/launcher.yaml
 ```
 
-Put real paths, service labels, and `.env` references only in the ignored local config or in a private overlay. Always-on services are declarative-only; do not create them through `/run`.
+Put real paths, service labels, and `.env` references only in the ignored local config or in a private overlay. Always-on services are declarative-only; do not create or manage them through HTTP service endpoints. Inspect them through the regular process and log endpoints.
 
 ## Start The Launcher
 
@@ -80,10 +80,9 @@ curl -sf http://127.0.0.1:7997/scheduled
 curl -sf -X POST http://127.0.0.1:7997/scheduled/{job_id}/cancel
 ```
 
-Inspect services and logs:
+Inspect logs:
 
 ```bash
-curl -sf http://127.0.0.1:7997/services
 curl -sf http://127.0.0.1:7997/logs/heartbeat
 curl -sf http://127.0.0.1:7997/logs/output
 ```

@@ -70,10 +70,9 @@ def test_heartbeat_and_output_logs(live_client):
     assert any("live_echo" in f.get("filename", "") for f in files)
 
 
-def test_services_endpoint(live_client):
+def test_services_endpoint_not_available(live_client):
     r = live_client.get("/services")
-    assert r.status_code == 200
-    assert r.json() == []
+    assert r.status_code == 404
 
 
 def test_process_not_found(live_client):

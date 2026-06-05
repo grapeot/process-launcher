@@ -20,7 +20,7 @@ python -m pytest -v -m live_integration
 - Process start, stop, timeout, cwd, env, output capture, and zombie reaping.
 - Service monitor restart behavior and circuit breaker behavior.
 - Heartbeat and output log writing, filtering, and retention cleanup.
-- FastAPI endpoints for health, process control, scheduled jobs, services, logs, and OpenAPI.
+- FastAPI endpoints for health, process control, scheduled jobs, logs, and OpenAPI.
 - SQLite schema migration and durable scheduled job recovery.
 - Misfire policies for jobs whose `run_at` passes while the launcher is down.
 - Live HTTP behavior through the `live_integration` fixture.

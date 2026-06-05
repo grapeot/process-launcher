@@ -116,19 +116,18 @@ async def test_get_output_tail(client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_services(client: httpx.AsyncClient) -> None:
-    response = await client.get("/services")
-    assert response.status_code == 200
-    assert isinstance(response.json(), list)
-
-
-@pytest.mark.asyncio
 async def test_api_based_always_on_is_rejected(client: httpx.AsyncClient) -> None:
     response = await client.post(
         "/run",
         json={"command": [sys.executable, "-c", "import time; time.sleep(5)"], "label": "demo", "always_on": True},
     )
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_services_endpoint_not_available(client: httpx.AsyncClient) -> None:
+    response = await client.get("/services")
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio

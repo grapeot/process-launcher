@@ -162,12 +162,7 @@ def main() -> None:
         exit_events = [e for e in events if e.get("event") == "PROCESS_EXITED"]
         check("has PROCESS_EXITED events", len(exit_events) >= 2)
 
-        step("9. Verify services endpoint")
-        r = httpx.get(f"{BASE_URL}/services", timeout=3)
-        check("GET /services returns 200", r.status_code == 200)
-        check("services list is empty (no always-on configured)", r.json() == [])
-
-        step("10. Shutdown")
+        step("9. Shutdown")
         r = httpx.post(f"{BASE_URL}/shutdown", timeout=5)
         check("POST /shutdown returns 200", r.status_code == 200)
 

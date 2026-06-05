@@ -51,13 +51,11 @@ async def test_full_lifecycle(tmp_path: Path) -> None:
     await initialize_app_state(app, load_config(config_path), config_path)
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-            services = await client.get("/services")
-            assert services.json()[0]["status"] == "running"
+            running = await client.get("/processes", params={"running_only": True})
+            assert any(process["label"] == "always" for process in running.json())
             run_response = await client.post("/run", json={"command": [sys.executable, "-c", "print('job')"], "label": "job"})
             pid = cast(int, run_response.json()["pid"])
             await wait_for_status(client, pid, "exited")
-            stopped = await client.post(f"/services/{services.json()[0]['label']}/restart")
-            assert stopped.status_code == 200
             heartbeat = await client.get("/logs/heartbeat", params={"label": "job"})
             assert len(heartbeat.json()) >= 2
     finally:
