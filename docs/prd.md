@@ -25,7 +25,7 @@ Process Launcher provides both the control surface and a TCC permission bridge. 
 - It does not recover arbitrary child process handles across restarts.
 - It does not implement recurring schedules; use cron, systemd timers, or another scheduler to call the API.
 - It does not replace YAML configuration with SQLite. YAML remains the bootstrap and declared-service source.
-- It does not persist API-created always-on services in this version.
+- It does not support API-created always-on services. Always-on services are declarative-only and must be defined in YAML.
 - It does not send notifications.
 - It does not sandbox commands.
 - It is not designed to be exposed to untrusted networks.
@@ -75,7 +75,7 @@ Private paths, real service names, secrets, and local job recipes belong in the 
 - `GET /processes/{pid}` returns one tracked process.
 - `POST /processes/{pid}/stop` terminates a tracked process.
 - `GET /processes/{pid}/output` reads captured output.
-- `GET /services` lists configured or ad hoc always-on services.
+- `GET /services` lists YAML-declared always-on services.
 - `POST /services/{label}/restart` restarts a service.
 - `POST /services/{label}/reset` resets a service circuit breaker.
 - `GET /logs/heartbeat` reads heartbeat events.
@@ -98,3 +98,7 @@ If a pending job's `run_at` time has already passed while the launcher was down,
 - `fail` marks the job as `failed` with an explanatory error.
 
 If the launcher restarts while a scheduled job is `running`, the next startup marks that job `failed` because the new launcher process no longer owns a reliable process handle.
+
+## Declarative Always-On Services
+
+Always-on services are a product-level declaration, not a runtime injection API. They must be defined in `config/launcher.yaml` under `services:`. This keeps long-lived local daemons visible in the bootstrap config, avoids hidden persistent service state, and keeps `/run` focused on one-off or scheduled command execution.

@@ -123,28 +123,12 @@ async def test_list_services(client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_restart_service(client: httpx.AsyncClient, app) -> None:
-    await client.post(
+async def test_api_based_always_on_is_rejected(client: httpx.AsyncClient) -> None:
+    response = await client.post(
         "/run",
         json={"command": [sys.executable, "-c", "import time; time.sleep(5)"], "label": "demo", "always_on": True},
     )
-    restarted = await client.post("/services/demo/restart")
-    assert restarted.status_code == 200
-    assert restarted.json()["label"] == "demo"
-    await app.state.process_manager.stop_all()
-
-
-@pytest.mark.asyncio
-async def test_reset_service(client: httpx.AsyncClient, app) -> None:
-    await client.post(
-        "/run",
-        json={"command": [sys.executable, "-c", "import time; time.sleep(5)"], "label": "broken", "always_on": True},
-    )
-    process = next(item for item in app.state.service_monitor.list_services() if item["label"] == "broken")
-    assert process["status"] == "running"
-    reset = await client.post("/services/broken/reset")
-    assert reset.status_code == 200
-    await app.state.process_manager.stop_all()
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio

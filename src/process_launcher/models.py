@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Self
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ProcessStatus(str, Enum):
@@ -30,11 +30,12 @@ class ProcessInfo(BaseModel):
 
 
 class RunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     command: list[str] | str
     cwd: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
     label: str | None = None
-    always_on: bool = False
     timeout: float | None = Field(default=None, gt=0)
     delay_seconds: float | None = Field(default=None, ge=0, description="Delay execution by N seconds. Persisted across restarts.")
     run_at: datetime | None = Field(default=None, description="Absolute time to run the command.")

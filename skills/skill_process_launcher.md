@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Use Process Launcher when a local workflow needs to start a command through a trusted localhost API, inspect process status, read output logs, or manage a small always-on service.
+Use Process Launcher when a local workflow needs to start a command through a trusted localhost API, inspect process status, read output logs, or manage a small set of YAML-declared always-on services.
 
 ## Why Process Launcher Exists (macOS TCC)
 
@@ -27,7 +27,7 @@ Create local config from the public example:
 cp config/launcher.example.yaml config/launcher.yaml
 ```
 
-Put real paths, service labels, and `.env` references only in the ignored local config or in a private overlay.
+Put real paths, service labels, and `.env` references only in the ignored local config or in a private overlay. Always-on services are declarative-only; do not create them through `/run`.
 
 ## Start The Launcher
 

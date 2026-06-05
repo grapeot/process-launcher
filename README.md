@@ -10,7 +10,7 @@ The server binds to `127.0.0.1` by default. It accepts arbitrary commands from l
 - `GET /processes` and `GET /processes/{pid}` report tracked process state.
 - `GET /processes/{pid}/output` reads captured stdout and stderr.
 - `delay_seconds` schedules a durable delayed launch that can be listed, cancelled, and recovered after restart.
-- Always-on services can be configured with restart delay, restart window, and circuit breaker limits.
+- Always-on services can be declared in YAML with restart delay, restart window, and circuit breaker limits.
 - Heartbeat and output logs are retained locally and ignored by git.
 
 ## Install
@@ -36,6 +36,8 @@ cp config/launcher.example.yaml config/launcher.yaml
 ```
 
 `config/launcher.yaml` is intentionally ignored by git. Keep real local paths, service names, tokens, and `.env` references there. The tracked repository only ships `config/launcher.example.yaml` with generic placeholder values.
+
+Always-on services are declarative-only. Define them under `services:` in YAML; `/run` does not create always-on services dynamically.
 
 ## Run
 

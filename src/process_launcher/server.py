@@ -12,7 +12,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 
 from .config import load_config
 from .log import HeartbeatLogger, OutputLogger
-from .models import LauncherConfig, MisfirePolicy, ProcessInfo, RunRequest, RunResponse, ScheduledJob, ScheduledStatus, ServiceConfig
+from .models import LauncherConfig, MisfirePolicy, ProcessInfo, RunRequest, RunResponse, ScheduledJob, ScheduledStatus
 from .process import ProcessManager
 from .service_monitor import ServiceMonitor
 from .storage import SQLiteStore
@@ -45,18 +45,6 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
     @app.post("/run", response_model=RunResponse)
     async def run_command(request: RunRequest) -> RunResponse:
         process_manager: ProcessManager = app.state.process_manager
-        service_monitor: ServiceMonitor = app.state.service_monitor
-        if request.always_on:
-            if not request.label:
-                raise HTTPException(status_code=400, detail="label is required for always_on services")
-            config_obj = ServiceConfig(label=request.label, command=request.command, cwd=request.cwd, env=request.env)
-            process = await service_monitor.start_ad_hoc_service(config_obj)
-            return RunResponse(
-                pid=process.pid,
-                label=process.label,
-                started_at=process.started_at,
-                output_file=process.output_file,
-            )
         if (request.delay_seconds and request.delay_seconds > 0) or request.run_at is not None:
             scheduled_at = datetime.now()
             run_at = request.run_at or scheduled_at + timedelta(seconds=request.delay_seconds or 0)
