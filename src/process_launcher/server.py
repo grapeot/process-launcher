@@ -12,8 +12,10 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 
 from .config import load_config
 from .log import HeartbeatLogger, OutputLogger
-from .models import LauncherConfig, MisfirePolicy, ProcessInfo, RunRequest, RunResponse, ScheduledJob, ScheduledStatus
+from .models import LauncherConfig, PeriodicJobState, PeriodicRun, ProcessInfo, RunRequest, RunResponse, ScheduledJob
+from .periodic import PeriodicManager
 from .process import ProcessManager
+from .scheduled import ScheduledManager
 from .service_monitor import ServiceMonitor
 from .storage import SQLiteStore
 
@@ -73,6 +75,35 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
     async def list_scheduled() -> list[ScheduledJob]:
         scheduled_manager: ScheduledManager = app.state.scheduled_manager
         return scheduled_manager.list_jobs()
+
+    @app.get("/periodic", response_model=list[PeriodicJobState])
+    async def list_periodic() -> list[PeriodicJobState]:
+        periodic_manager: PeriodicManager = app.state.periodic_manager
+        return periodic_manager.list_jobs()
+
+    @app.get("/periodic/{label}", response_model=PeriodicJobState)
+    async def get_periodic(label: str) -> PeriodicJobState:
+        periodic_manager: PeriodicManager = app.state.periodic_manager
+        try:
+            return periodic_manager.get_job(label)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="periodic job not found") from exc
+
+    @app.get("/periodic/{label}/runs", response_model=list[PeriodicRun])
+    async def list_periodic_runs(label: str) -> list[PeriodicRun]:
+        periodic_manager: PeriodicManager = app.state.periodic_manager
+        try:
+            return periodic_manager.list_runs(label)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="periodic job not found") from exc
+
+    @app.get("/periodic/{label}/runs/{run_id}", response_model=PeriodicRun)
+    async def get_periodic_run(label: str, run_id: str) -> PeriodicRun:
+        periodic_manager: PeriodicManager = app.state.periodic_manager
+        try:
+            return periodic_manager.get_run(label, run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="periodic run not found") from exc
 
     @app.post("/scheduled/{job_id}/cancel", response_model=ScheduledJob)
     async def cancel_scheduled(job_id: str) -> ScheduledJob:
@@ -157,131 +188,6 @@ async def _terminate_self() -> None:
     os.kill(os.getpid(), signal.SIGTERM)
 
 
-class ScheduledManager:
-    """Tracker and recovery scheduler for durable scheduled jobs."""
-
-    def __init__(self, store: SQLiteStore) -> None:
-        self.store = store
-        self._jobs: dict[str, ScheduledJob] = {}
-        self._tasks: dict[str, asyncio.Task[None]] = {}
-        for job in self.store.list_scheduled_jobs():
-            self._jobs[job.id] = job
-
-    def add(self, job: ScheduledJob) -> None:
-        self._jobs[job.id] = job
-        self.store.upsert_scheduled_job(job)
-
-    def set_task(self, job_id: str, task: asyncio.Task[None]) -> None:
-        self._tasks[job_id] = task
-
-    def schedule(self, process_manager: ProcessManager, job: ScheduledJob, request: RunRequest, *, delay: float | None = None) -> None:
-        actual_delay = delay if delay is not None else max((job.run_at - datetime.now()).total_seconds(), 0.0)
-        task = asyncio.create_task(_delayed_run(process_manager, self, job, request, actual_delay))
-        self.set_task(job.id, task)
-
-    def mark_running(self, job_id: str, pid: int) -> None:
-        job = self._jobs.get(job_id)
-        if job:
-            self._update_job(job.model_copy(update={"status": ScheduledStatus.RUNNING, "result_pid": pid, "started_at": datetime.now()}))
-
-    def mark_completed(self, job_id: str) -> None:
-        job = self._jobs.get(job_id)
-        if job:
-            self._update_job(job.model_copy(update={"status": ScheduledStatus.COMPLETED, "completed_at": datetime.now()}))
-        self._tasks.pop(job_id, None)
-
-    def mark_failed(self, job_id: str, error: str) -> None:
-        job = self._jobs.get(job_id)
-        if job:
-            self._update_job(job.model_copy(update={"status": ScheduledStatus.FAILED, "last_error": error, "completed_at": datetime.now()}))
-        self._tasks.pop(job_id, None)
-
-    def mark_missed(self, job_id: str, error: str) -> None:
-        job = self._jobs.get(job_id)
-        if job:
-            self._update_job(job.model_copy(update={"status": ScheduledStatus.MISSED, "last_error": error, "completed_at": datetime.now()}))
-        self._tasks.pop(job_id, None)
-
-    def cancel(self, job_id: str) -> ScheduledJob:
-        job = self._jobs.get(job_id)
-        if job is None:
-            raise KeyError(job_id)
-        if job.status != ScheduledStatus.PENDING:
-            raise ValueError(f"Cannot cancel job in status {job.status.value}")
-        task = self._tasks.pop(job_id, None)
-        if task and not task.done():
-            task.cancel()
-        self._update_job(job.model_copy(update={"status": ScheduledStatus.CANCELLED, "cancelled_at": datetime.now()}))
-        return self._jobs[job_id]
-
-    def list_jobs(self) -> list[ScheduledJob]:
-        return sorted(self._jobs.values(), key=lambda j: j.scheduled_at)
-
-    def recover_pending(self, process_manager: ProcessManager) -> None:
-        self.store.mark_stale_running_jobs_failed()
-        for job in self.store.list_scheduled_jobs():
-            self._jobs[job.id] = job
-        for job in self.store.list_pending_scheduled_jobs():
-            if job.run_at > datetime.now():
-                self.schedule(process_manager, job, self._request_from_job(job))
-            elif job.misfire_policy == MisfirePolicy.RUN_IMMEDIATELY:
-                self.schedule(process_manager, job, self._request_from_job(job), delay=0.0)
-            elif job.misfire_policy == MisfirePolicy.SKIP:
-                self.mark_missed(job.id, "scheduled run_at passed while launcher was down")
-            elif job.misfire_policy == MisfirePolicy.FAIL:
-                self.mark_failed(job.id, "scheduled run_at passed while launcher was down")
-
-    def shutdown(self) -> None:
-        for task in self._tasks.values():
-            if not task.done():
-                task.cancel()
-
-    def close(self) -> None:
-        self.store.close()
-
-    def _update_job(self, job: ScheduledJob) -> None:
-        self._jobs[job.id] = job
-        self.store.update_scheduled_job(job)
-
-    def _request_from_job(self, job: ScheduledJob) -> RunRequest:
-        return RunRequest(
-            command=job.command,
-            cwd=job.cwd,
-            env=job.env,
-            label=job.label,
-            timeout=job.timeout,
-        )
-
-
-async def _delayed_run(
-    process_manager: ProcessManager,
-    scheduled_manager: ScheduledManager,
-    job: ScheduledJob,
-    request: RunRequest,
-    delay: float,
-) -> None:
-    try:
-        await asyncio.sleep(delay)
-    except asyncio.CancelledError:
-        return
-    scheduled_manager.mark_running(job.id, pid=0)
-    try:
-        response = await process_manager.start_process(
-            request,
-            on_exit=lambda info: _mark_scheduled_exit(scheduled_manager, job.id, info),
-        )
-        scheduled_manager.mark_running(job.id, pid=response.pid)
-    except Exception as exc:
-        scheduled_manager.mark_failed(job.id, str(exc))
-
-
-def _mark_scheduled_exit(scheduled_manager: ScheduledManager, job_id: str, info: ProcessInfo) -> None:
-    if info.exit_code == 0 and info.status.value == "exited":
-        scheduled_manager.mark_completed(job_id)
-    else:
-        scheduled_manager.mark_failed(job_id, f"process exited with status={info.status.value} exit_code={info.exit_code}")
-
-
 async def initialize_app_state(app: FastAPI, launcher_config: LauncherConfig, config_path: Path | None = None) -> None:
     if getattr(app.state, "process_manager", None) is not None:
         return
@@ -298,6 +204,7 @@ async def initialize_app_state(app: FastAPI, launcher_config: LauncherConfig, co
     service_monitor = ServiceMonitor(process_manager, heartbeat_logger)
     service_monitor.register_services(launcher_config.services)
     scheduled_manager = ScheduledManager(sqlite_store)
+    periodic_manager = PeriodicManager(sqlite_store, launcher_config.periodic_jobs)
 
     app.state.launcher_config = launcher_config
     app.state.heartbeat_logger = heartbeat_logger
@@ -305,8 +212,10 @@ async def initialize_app_state(app: FastAPI, launcher_config: LauncherConfig, co
     app.state.process_manager = process_manager
     app.state.service_monitor = service_monitor
     app.state.scheduled_manager = scheduled_manager
+    app.state.periodic_manager = periodic_manager
 
     scheduled_manager.recover_pending(process_manager)
+    periodic_manager.start(process_manager)
     await service_monitor.start_registered_services()
 
 
@@ -314,6 +223,9 @@ async def shutdown_app_state(app: FastAPI) -> None:
     service_monitor: ServiceMonitor | None = getattr(app.state, "service_monitor", None)
     process_manager: ProcessManager | None = getattr(app.state, "process_manager", None)
     scheduled_manager: ScheduledManager | None = getattr(app.state, "scheduled_manager", None)
+    periodic_manager: PeriodicManager | None = getattr(app.state, "periodic_manager", None)
+    if periodic_manager is not None:
+        periodic_manager.shutdown()
     if scheduled_manager is not None:
         scheduled_manager.shutdown()
     if service_monitor is not None:
@@ -323,6 +235,6 @@ async def shutdown_app_state(app: FastAPI) -> None:
     if scheduled_manager is not None:
         scheduled_manager.close()
 
-    for attr in ("service_monitor", "process_manager", "heartbeat_logger", "output_logger", "launcher_config", "scheduled_manager"):
+    for attr in ("service_monitor", "process_manager", "heartbeat_logger", "output_logger", "launcher_config", "scheduled_manager", "periodic_manager"):
         if hasattr(app.state, attr):
             delattr(app.state, attr)

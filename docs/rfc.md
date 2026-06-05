@@ -6,7 +6,7 @@ Draft for the public package scaffold.
 
 ## Design Summary
 
-Process Launcher is a localhost FastAPI server around `subprocess.Popen`. It starts child processes, captures combined stdout and stderr, stores current process handles in memory, persists scheduled jobs in SQLite, and writes heartbeat events to JSONL files. It favors a small implementation over a broad job-management framework.
+Process Launcher is a localhost FastAPI server around `subprocess.Popen`. It starts child processes, captures combined stdout and stderr, stores current process handles in memory, persists scheduled jobs and periodic run history in SQLite, runs YAML-declared recurring jobs, and writes heartbeat events to JSONL files. It favors a small implementation over a broad job-management framework.
 
 ## Decisions
 
@@ -28,9 +28,22 @@ Dry-run validation stays at the caller layer. Many scheduled commands are tool-s
 
 The database includes a `schema_migrations` table. Each migration runs once and leaves a permanent version record so future launcher versions can upgrade older database files predictably.
 
-### D4: External Recurrence
+### D4: YAML-Declared Periodic Jobs
 
-Recurring schedules stay outside the launcher. Cron, systemd timers, launchd, or any other scheduler can call `POST /run`. The launcher only handles immediate execution and one-shot durable delays.
+Recurring schedules are declared in YAML under `periodic_jobs:`. YAML is the only source of truth for periodic job creation, deletion, enablement, command changes, and schedule changes. This mirrors declared always-on services and avoids hidden long-term state created through HTTP.
+
+The periodic HTTP API is read-only:
+
+- `GET /periodic`
+- `GET /periodic/{label}`
+- `GET /periodic/{label}/runs`
+- `GET /periodic/{label}/runs/{run_id}`
+
+There is intentionally no `POST /periodic`, `run-now`, `enable`, or `disable` endpoint. Manual validation should use `POST /run` with the same command and a test label.
+
+Supported schedule types are `daily`, `weekly`, `interval`, and limited 5-field `cron`. The first three are the preferred forms because they encode the user's intent more clearly than cron text. `cron` exists as a migration escape hatch for expressions like multiple run times in one day.
+
+Periodic job declarations stay in YAML. Periodic run instances stay in SQLite. This keeps durable run history queryable without making SQLite the source of long-term desired state.
 
 ### D5: Always-On Service Recovery
 
@@ -67,6 +80,7 @@ caller -> POST /run with delay_seconds/run_at -> SQLite scheduled_jobs
 
 caller -> GET /processes/{pid} -> in-memory process table
 caller -> GET /scheduled -> SQLite scheduled_jobs
+caller -> GET /periodic -> YAML periodic_jobs + SQLite periodic_runs
 caller -> GET /logs/output/{file} -> local output log
 ```
 
@@ -82,6 +96,12 @@ For each pending job:
 - `run_at <= now` and `misfire_policy = fail`: mark `failed`.
 
 Completed, failed, cancelled, and missed jobs stay in SQLite for inspection and are not rescheduled.
+
+Periodic startup is separate from one-shot startup. The launcher reads YAML declarations, marks any previously `running` periodic runs as `failed` because the new process does not own their child process handles, then starts one scheduler loop per enabled periodic job. Disabled periodic jobs remain visible through `GET /periodic` but do not run.
+
+Each periodic run starts as a normal tracked process and writes to the same output log and heartbeat paths as a one-off `/run` command. The periodic run record stores `scheduled_for`, `started_at`, `completed_at`, `status`, `result_pid`, `output_file`, and `last_error`.
+
+If a prior run is still active and `overlap_policy = skip`, the launcher records a skipped run instead of starting another process. `run_concurrently` permits overlapping process starts.
 
 ## Security Model
 

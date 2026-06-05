@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from .models import LauncherConfig, ServiceConfig
+from .models import LauncherConfig, PeriodicJobConfig, ServiceConfig
 
 
 def load_env_file(path: str | Path | None) -> dict[str, str]:
@@ -37,6 +37,14 @@ def _merge_service_envs(services: dict[str, ServiceConfig]) -> dict[str, Service
     return merged
 
 
+def _merge_periodic_envs(periodic_jobs: dict[str, PeriodicJobConfig]) -> dict[str, PeriodicJobConfig]:
+    merged: dict[str, PeriodicJobConfig] = {}
+    for name, job in periodic_jobs.items():
+        env_file_values = load_env_file(job.resolved_env_file()) if job.env_file else {}
+        merged[name] = job.model_copy(update={"env": {**env_file_values, **job.env}})
+    return merged
+
+
 def load_config(path: str | Path) -> LauncherConfig:
     config_path = Path(path)
     if not config_path.exists():
@@ -45,4 +53,5 @@ def load_config(path: str | Path) -> LauncherConfig:
     raw_data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     config = LauncherConfig.model_validate(raw_data)
     services = _merge_service_envs(config.services)
-    return config.model_copy(update={"services": services})
+    periodic_jobs = _merge_periodic_envs(config.periodic_jobs)
+    return config.model_copy(update={"services": services, "periodic_jobs": periodic_jobs})

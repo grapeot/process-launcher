@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
 import pytest
+import yaml
+from fastapi import FastAPI
+
+from process_launcher.config import load_config
+from process_launcher.server import create_app, initialize_app_state, shutdown_app_state
 
 
 async def wait_for_process(client: httpx.AsyncClient, pid: int, status: str, timeout: float = 3.0) -> dict[str, Any]:
@@ -148,6 +154,66 @@ async def test_list_scheduled_empty(client: httpx.AsyncClient) -> None:
     response = await client.get("/scheduled")
     assert response.status_code == 200
     assert response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_list_periodic_empty(client: httpx.AsyncClient) -> None:
+    response = await client.get("/periodic")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_periodic_write_endpoints_are_not_available(client: httpx.AsyncClient) -> None:
+    assert (await client.post("/periodic/demo/run-now")).status_code == 404
+    assert (await client.post("/periodic/demo/enable")).status_code == 404
+    assert (await client.post("/periodic/demo/disable")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_periodic_interval_job_records_run(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_path = config_dir / "launcher.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "logging": {"dir": "logs"},
+                "storage": {"sqlite_path": "state/launcher.db"},
+                "periodic_jobs": {
+                    "fast_periodic": {
+                        "label": "fast_periodic",
+                        "command": [sys.executable, "-c", "print('periodic ok')"],
+                        "schedule": {"type": "interval", "every_seconds": 0.1},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    application: FastAPI = create_app(config_path=config_path, config=config)
+    await initialize_app_state(application, config, config_path)
+    try:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as local_client:
+            periodic = await local_client.get("/periodic")
+            assert periodic.status_code == 200
+            assert periodic.json()[0]["label"] == "fast_periodic"
+
+            deadline = asyncio.get_running_loop().time() + 3.0
+            while asyncio.get_running_loop().time() < deadline:
+                runs = await local_client.get("/periodic/fast_periodic/runs")
+                completed = [run for run in runs.json() if run["status"] == "completed"]
+                if completed:
+                    detail = await local_client.get(f"/periodic/fast_periodic/runs/{completed[0]['id']}")
+                    assert detail.status_code == 200
+                    assert detail.json()["output_file"]
+                    return
+                await asyncio.sleep(0.05)
+            raise AssertionError("periodic run did not complete")
+    finally:
+        await shutdown_app_state(application)
 
 
 @pytest.mark.asyncio

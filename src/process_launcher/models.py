@@ -98,11 +98,82 @@ class ServiceConfig(BaseModel):
         return Path(self.cwd) / env_path
 
 
+class PeriodicSchedule(BaseModel):
+    type: str
+    time: str | None = None
+    timezone: str = "UTC"
+    days_of_week: list[str] = Field(default_factory=list)
+    every_seconds: float | None = Field(default=None, gt=0)
+    expression: str | None = None
+
+    @model_validator(mode="after")
+    def validate_schedule(self) -> Self:
+        if self.type == "daily":
+            if not self.time:
+                raise ValueError("daily schedule requires time")
+        elif self.type == "weekly":
+            if not self.time:
+                raise ValueError("weekly schedule requires time")
+            if not self.days_of_week:
+                raise ValueError("weekly schedule requires days_of_week")
+        elif self.type == "interval":
+            if self.every_seconds is None:
+                raise ValueError("interval schedule requires every_seconds")
+        elif self.type == "cron":
+            if not self.expression:
+                raise ValueError("cron schedule requires expression")
+        else:
+            raise ValueError("schedule type must be daily, weekly, interval, or cron")
+        return self
+
+
+class PeriodicOverlapPolicy(str, Enum):
+    SKIP = "skip"
+    RUN_CONCURRENTLY = "run_concurrently"
+
+
+class MisfirePolicy(str, Enum):
+    RUN_IMMEDIATELY = "run_immediately"
+    SKIP = "skip"
+    FAIL = "fail"
+
+
+class PeriodicJobConfig(BaseModel):
+    label: str
+    command: list[str] | str
+    cwd: str | None = None
+    env: dict[str, str] = Field(default_factory=dict)
+    env_file: str | None = None
+    timeout: float | None = Field(default=None, gt=0)
+    enabled: bool = True
+    schedule: PeriodicSchedule
+    overlap_policy: PeriodicOverlapPolicy = PeriodicOverlapPolicy.SKIP
+    misfire_policy: MisfirePolicy = MisfirePolicy.SKIP
+
+    @field_validator("command")
+    @classmethod
+    def validate_command(cls, value: list[str] | str) -> list[str] | str:
+        if isinstance(value, list) and not value:
+            raise ValueError("command must not be empty")
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("command must not be empty")
+        return value
+
+    def resolved_env_file(self) -> Path | None:
+        if not self.env_file:
+            return None
+        env_path = Path(self.env_file)
+        if env_path.is_absolute() or not self.cwd:
+            return env_path
+        return Path(self.cwd) / env_path
+
+
 class LauncherConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     services: dict[str, ServiceConfig] = Field(default_factory=dict)
+    periodic_jobs: dict[str, PeriodicJobConfig] = Field(default_factory=dict)
 
 
 class ScheduledStatus(str, Enum):
@@ -114,10 +185,42 @@ class ScheduledStatus(str, Enum):
     MISSED = "missed"
 
 
-class MisfirePolicy(str, Enum):
-    RUN_IMMEDIATELY = "run_immediately"
-    SKIP = "skip"
-    FAIL = "fail"
+class PeriodicRunStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class PeriodicRun(BaseModel):
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    label: str
+    command: list[str] | str
+    cwd: str | None = None
+    env: dict[str, str] = Field(default_factory=dict)
+    timeout: float | None = None
+    scheduled_for: datetime
+    status: PeriodicRunStatus = PeriodicRunStatus.PENDING
+    trigger: str = "schedule"
+    result_pid: int | None = None
+    output_file: str | None = None
+    last_error: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class PeriodicRuntime(BaseModel):
+    next_run_at: datetime | None = None
+    last_run_status: PeriodicRunStatus | None = None
+    last_run_at: datetime | None = None
+    active_pid: int | None = None
+
+
+class PeriodicJobState(BaseModel):
+    label: str
+    declared: PeriodicJobConfig
+    runtime: PeriodicRuntime
 
 
 class ScheduledJob(BaseModel):

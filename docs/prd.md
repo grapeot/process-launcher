@@ -6,7 +6,7 @@ Local automation often needs a small trusted process to start commands, track th
 
 On macOS, an additional constraint comes from TCC (Transparency Consent and Control) privacy controls. The system restricts access to Microphone, Camera, Screen Recording, Accessibility, Full Disk Access, and protected folders. These checks look at the responsible process and its GUI application ancestry. A child process only inherits TCC permissions if its parent chain leads back to a trusted GUI application that the user has granted permission to.
 
-Process Launcher provides both the control surface and a TCC permission bridge. It is intentionally narrow: receive a command, start a child process, capture output, record lifecycle events, expose current process state, and persist delayed jobs that must survive launcher restarts. Started from an interactive terminal, every child it launches inherits that terminal's TCC grants.
+Process Launcher provides both the control surface and a TCC permission bridge. It is intentionally narrow: receive a command, start a child process, capture output, record lifecycle events, expose current process state, persist delayed jobs that must survive launcher restarts, and run YAML-declared recurring jobs. Started from an interactive terminal, every child it launches inherits that terminal's TCC grants.
 
 ## Goals
 
@@ -17,15 +17,18 @@ Process Launcher provides both the control surface and a TCC permission bridge. 
 - Support durable delayed launches that can be listed, cancelled while pending, and recovered after launcher or machine restarts.
 - Support absolute `run_at` scheduling for cross-day jobs.
 - Support a small set of configured always-on services with restart and circuit-breaker behavior.
+- Support YAML-declared periodic jobs for daily, weekly, fixed-interval, and limited cron-compatible schedules.
+- Expose periodic jobs and their run history through read-only API endpoints.
 - Provide an OpenAPI schema for human scripts and AI agents.
 
 ## Non-Goals
 
 - Process Launcher is not a distributed job queue.
 - It does not recover arbitrary child process handles across restarts.
-- It does not implement recurring schedules; use cron, systemd timers, or another scheduler to call the API.
+- It does not provide API-created or API-mutated recurring jobs. YAML remains the source of truth for recurring schedules.
 - It does not replace YAML configuration with SQLite. YAML remains the bootstrap and declared-service source.
 - It does not support API-created always-on services. Always-on services are declarative-only and must be defined in YAML.
+- It is not a full cron replacement for every system-level daemon. It targets local user-session automation that benefits from the launcher's environment, TCC inheritance, logs, and API observability.
 - It does not send notifications.
 - It does not sandbox commands.
 - It is not designed to be exposed to untrusted networks.
@@ -61,6 +64,44 @@ services:
     restart_delay: 10
     max_restarts: 3
     restart_window: 60
+
+periodic_jobs:
+  daily_job:
+    label: daily_job
+    command: ["python", "scripts/daily.py"]
+    cwd: /path/to/project
+    env_file: .env
+    enabled: true
+    schedule:
+      type: daily
+      time: "19:00"
+      timezone: America/Los_Angeles
+    overlap_policy: skip
+    misfire_policy: skip
+    timeout: 1800
+
+  weekly_job:
+    label: weekly_job
+    command: ["python", "scripts/weekly.py"]
+    cwd: /path/to/project
+    enabled: true
+    schedule:
+      type: weekly
+      days_of_week: [thu]
+      time: "07:30"
+      timezone: America/Los_Angeles
+    overlap_policy: skip
+    misfire_policy: skip
+
+  poller:
+    label: poller
+    command: ["python", "scripts/poll.py"]
+    cwd: /path/to/project
+    enabled: false
+    schedule:
+      type: interval
+      every_seconds: 600
+    overlap_policy: skip
 ```
 
 Private paths, real service names, secrets, and local job recipes belong in the ignored local config or in a separate private overlay.
@@ -71,6 +112,10 @@ Private paths, real service names, secrets, and local job recipes belong in the 
 - `POST /run` starts a command immediately or creates a durable scheduled launch with `delay_seconds` or `run_at`.
 - `GET /scheduled` lists delayed jobs.
 - `POST /scheduled/{job_id}/cancel` cancels a pending delayed job.
+- `GET /periodic` lists YAML-declared periodic jobs with runtime state.
+- `GET /periodic/{label}` returns one periodic job.
+- `GET /periodic/{label}/runs` lists run records for one periodic job.
+- `GET /periodic/{label}/runs/{run_id}` returns one periodic run record.
 - `GET /processes` lists tracked processes.
 - `GET /processes/{pid}` returns one tracked process.
 - `POST /processes/{pid}/stop` terminates a tracked process.
@@ -108,3 +153,18 @@ Always-on services are a product-level declaration, not a runtime injection API.
 There is no `/services` list/create/reset API surface. Declared services are launched as ordinary tracked child processes, so callers inspect them through `/processes`, `/processes/{pid}/output`, `/logs/heartbeat`, and `/logs/output`.
 
 The only service-specific API is `POST /declared-services/{label}/restart`. It exists for operational recovery of YAML-declared services whose device discovery or external connections need a fresh start. It cannot create services, cannot list services, and returns 404 for labels that are not present in YAML.
+
+## Declarative Periodic Jobs
+
+Periodic jobs are also YAML-declared. This keeps recurring automation auditable and avoids a second hidden source of truth. The HTTP API is read-only for periodic jobs: callers can inspect declarations, next run time, active PID, last status, and run history, but they cannot create, modify, enable, disable, or trigger periodic jobs through `/periodic`.
+
+For manual validation, callers should submit the same command through `POST /run` with a test label. This preserves the split: YAML defines long-term recurring intent, while `POST /run` remains the one-off execution surface.
+
+Supported schedule types are:
+
+- `daily`: run every day at `time` in `timezone`.
+- `weekly`: run on `days_of_week` at `time` in `timezone`.
+- `interval`: run every `every_seconds`; this covers polling and every-N-hours jobs.
+- `cron`: limited 5-field compatibility for migration cases where daily/weekly/interval are awkward.
+
+`overlap_policy: skip` prevents a new run from starting while the prior run is active. `misfire_policy` is recorded in the declaration for recovery semantics; the initial implementation uses `skip` as the safe default for recurring jobs.
