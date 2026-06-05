@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Use Process Launcher when a local workflow needs to start a command through a trusted localhost API, inspect process status, read output logs, schedule durable one-shot jobs, or run a small set of YAML-declared always-on services.
+Use Process Launcher when a local workflow needs to start a command through a trusted localhost API, inspect process status, read output logs, schedule durable one-shot jobs, run a small set of YAML-declared always-on services, or run YAML-declared periodic jobs.
 
 ## Why Process Launcher Exists (macOS TCC)
 
@@ -28,6 +28,8 @@ cp config/launcher.example.yaml config/launcher.yaml
 ```
 
 Put real paths, service labels, `.env` references, and local SQLite paths only in the ignored local config or in a private overlay. Always-on services are declarative-only; do not create them through HTTP. Inspect them through the regular process and log endpoints. Use `POST /declared-services/{label}/restart` only for a service already present in YAML.
+
+Periodic jobs are also declarative-only. Define them under `periodic_jobs:` in YAML and inspect them through read-only `/periodic` endpoints. Do not create, modify, enable, disable, or trigger recurring jobs through HTTP; use `POST /run` with the same command when you need a one-off manual validation.
 
 ## Start The Launcher
 
@@ -70,6 +72,17 @@ List processes and read output:
 curl -sf http://127.0.0.1:7997/processes
 curl -sf http://127.0.0.1:7997/processes/{pid}/output
 ```
+
+Inspect YAML-declared periodic jobs and run history:
+
+```bash
+curl -sf http://127.0.0.1:7997/periodic
+curl -sf http://127.0.0.1:7997/periodic/{label}
+curl -sf http://127.0.0.1:7997/periodic/{label}/runs
+curl -sf http://127.0.0.1:7997/periodic/{label}/runs/{run_id}
+```
+
+There are no periodic write endpoints. To test a periodic command before enabling it in YAML, submit a one-off `/run` request with a test label.
 
 Schedule and cancel a durable delayed launch:
 

@@ -6,10 +6,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .models import MisfirePolicy, ScheduledJob, ScheduledStatus
+from .models import MisfirePolicy, PeriodicRun, PeriodicRunStatus, ScheduledJob, ScheduledStatus
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class SQLiteStore:
@@ -67,6 +67,36 @@ class SQLiteStore:
             self._conn.execute(
                 "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
                 (1, "create_scheduled_jobs", _serialize_datetime(datetime.now())),
+            )
+            self._conn.commit()
+        if 2 not in applied:
+            self._conn.execute(
+                """
+                CREATE TABLE periodic_runs (
+                    id TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    command_json TEXT NOT NULL,
+                    cwd TEXT,
+                    env_json TEXT NOT NULL,
+                    timeout REAL,
+                    scheduled_for TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    trigger TEXT NOT NULL,
+                    result_pid INTEGER,
+                    output_file TEXT,
+                    last_error TEXT,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            self._conn.execute("CREATE INDEX idx_periodic_runs_label_scheduled_for ON periodic_runs(label, scheduled_for)")
+            self._conn.execute("CREATE INDEX idx_periodic_runs_status ON periodic_runs(status)")
+            self._conn.execute(
+                "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                (2, "create_periodic_runs", _serialize_datetime(datetime.now())),
             )
             self._conn.commit()
 
@@ -132,6 +162,74 @@ class SQLiteStore:
         )
         self._conn.commit()
 
+    def upsert_periodic_run(self, run: PeriodicRun) -> None:
+        now = _serialize_datetime(datetime.now())
+        self._conn.execute(
+            """
+            INSERT INTO periodic_runs(
+                id, label, command_json, cwd, env_json, timeout, scheduled_for, status,
+                trigger, result_pid, output_file, last_error, started_at, completed_at,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                label = excluded.label,
+                command_json = excluded.command_json,
+                cwd = excluded.cwd,
+                env_json = excluded.env_json,
+                timeout = excluded.timeout,
+                scheduled_for = excluded.scheduled_for,
+                status = excluded.status,
+                trigger = excluded.trigger,
+                result_pid = excluded.result_pid,
+                output_file = excluded.output_file,
+                last_error = excluded.last_error,
+                started_at = excluded.started_at,
+                completed_at = excluded.completed_at,
+                updated_at = excluded.updated_at
+            """,
+            _periodic_run_values(run, created_at=now, updated_at=now),
+        )
+        self._conn.commit()
+
+    def list_periodic_runs(self, label: str | None = None) -> list[PeriodicRun]:
+        if label is None:
+            rows = self._conn.execute("SELECT * FROM periodic_runs ORDER BY scheduled_for").fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM periodic_runs WHERE label = ? ORDER BY scheduled_for",
+                (label,),
+            ).fetchall()
+        return [_row_to_periodic_run(row) for row in rows]
+
+    def get_periodic_run(self, run_id: str) -> PeriodicRun | None:
+        row = self._conn.execute("SELECT * FROM periodic_runs WHERE id = ?", (run_id,)).fetchone()
+        return _row_to_periodic_run(row) if row else None
+
+    def list_running_periodic_runs(self) -> list[PeriodicRun]:
+        rows = self._conn.execute(
+            "SELECT * FROM periodic_runs WHERE status = ? ORDER BY scheduled_for",
+            (PeriodicRunStatus.RUNNING.value,),
+        ).fetchall()
+        return [_row_to_periodic_run(row) for row in rows]
+
+    def mark_stale_periodic_runs_failed(self) -> None:
+        now = _serialize_datetime(datetime.now())
+        self._conn.execute(
+            """
+            UPDATE periodic_runs
+            SET status = ?, last_error = ?, completed_at = ?, updated_at = ?
+            WHERE status = ?
+            """,
+            (
+                PeriodicRunStatus.FAILED.value,
+                "launcher restarted while periodic run was running",
+                now,
+                now,
+                PeriodicRunStatus.RUNNING.value,
+            ),
+        )
+        self._conn.commit()
+
 
 def _job_values(job: ScheduledJob, *, created_at: str, updated_at: str) -> tuple[Any, ...]:
     return (
@@ -172,6 +270,46 @@ def _row_to_job(row: sqlite3.Row) -> ScheduledJob:
         started_at=_parse_optional_datetime(row["started_at"]),
         completed_at=_parse_optional_datetime(row["completed_at"]),
         cancelled_at=_parse_optional_datetime(row["cancelled_at"]),
+    )
+
+
+def _periodic_run_values(run: PeriodicRun, *, created_at: str, updated_at: str) -> tuple[Any, ...]:
+    return (
+        run.id,
+        run.label,
+        json.dumps(run.command),
+        run.cwd,
+        json.dumps(run.env),
+        run.timeout,
+        _serialize_datetime(run.scheduled_for),
+        run.status.value,
+        run.trigger,
+        run.result_pid,
+        run.output_file,
+        run.last_error,
+        _serialize_optional_datetime(run.started_at),
+        _serialize_optional_datetime(run.completed_at),
+        created_at,
+        updated_at,
+    )
+
+
+def _row_to_periodic_run(row: sqlite3.Row) -> PeriodicRun:
+    return PeriodicRun(
+        id=row["id"],
+        label=row["label"],
+        command=json.loads(row["command_json"]),
+        cwd=row["cwd"],
+        env=json.loads(row["env_json"]),
+        timeout=row["timeout"],
+        scheduled_for=_parse_datetime(row["scheduled_for"]),
+        status=PeriodicRunStatus(row["status"]),
+        trigger=row["trigger"],
+        result_pid=row["result_pid"],
+        output_file=row["output_file"],
+        last_error=row["last_error"],
+        started_at=_parse_optional_datetime(row["started_at"]),
+        completed_at=_parse_optional_datetime(row["completed_at"]),
     )
 
 
