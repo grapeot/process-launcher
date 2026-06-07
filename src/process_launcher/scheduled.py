@@ -8,6 +8,17 @@ from .process import ProcessManager
 from .storage import SQLiteStore
 
 
+def _to_naive_local(value: datetime) -> datetime:
+    """把可能 tz-aware 的时间统一成 naive 本地时间，以便和 datetime.now() 比较/相减。
+
+    历史 bug：run_at 可能带时区，datetime.now() 是 naive，二者直接比较/相减会抛
+    "can't compare/subtract offset-naive and offset-aware datetimes"。
+    """
+    if value.tzinfo is not None:
+        return value.astimezone().replace(tzinfo=None)
+    return value
+
+
 class ScheduledManager:
     """Tracker and recovery scheduler for durable one-shot scheduled jobs."""
 
@@ -26,7 +37,7 @@ class ScheduledManager:
         self._tasks[job_id] = task
 
     def schedule(self, process_manager: ProcessManager, job: ScheduledJob, request: RunRequest, *, delay: float | None = None) -> None:
-        actual_delay = delay if delay is not None else max((job.run_at - datetime.now()).total_seconds(), 0.0)
+        actual_delay = delay if delay is not None else max((_to_naive_local(job.run_at) - datetime.now()).total_seconds(), 0.0)
         task = asyncio.create_task(_delayed_run(process_manager, self, job, request, actual_delay))
         self.set_task(job.id, task)
 
@@ -73,7 +84,7 @@ class ScheduledManager:
         for job in self.store.list_scheduled_jobs():
             self._jobs[job.id] = job
         for job in self.store.list_pending_scheduled_jobs():
-            if job.run_at > datetime.now():
+            if _to_naive_local(job.run_at) > datetime.now():
                 self.schedule(process_manager, job, self._request_from_job(job))
             elif job.misfire_policy == MisfirePolicy.RUN_IMMEDIATELY:
                 self.schedule(process_manager, job, self._request_from_job(job), delay=0.0)
