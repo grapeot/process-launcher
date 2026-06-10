@@ -156,7 +156,9 @@ The only service-specific API is `POST /declared-services/{label}/restart`. It e
 
 ## Declarative Periodic Jobs
 
-Periodic jobs are also YAML-declared. This keeps recurring automation auditable and avoids a second hidden source of truth. The HTTP API is read-only for periodic jobs: callers can inspect declarations, next run time, active PID, last status, and run history, but they cannot create, modify, enable, disable, or trigger periodic jobs through `/periodic`.
+Periodic jobs are also YAML-declared. This keeps recurring automation auditable and avoids a second hidden source of truth. The HTTP API lets callers inspect declarations, next run time, active PID, last status, and run history. It cannot create, modify, enable, disable, or trigger periodic jobs through `/periodic`; those changes still happen in YAML.
+
+`POST /periodic/reload` reloads only `periodic_jobs` from `config/launcher.yaml` into the running launcher. It does not reload or restart declared services, logging, storage, or server settings. Active periodic child processes keep the configuration they started with; the reloaded declarations affect only future runs. If the new YAML cannot be parsed or validated, the launcher returns an error and keeps the previous in-memory periodic declarations.
 
 For manual validation, callers should submit the same command through `POST /run` with a test label. This preserves the split: YAML defines long-term recurring intent, while `POST /run` remains the one-off execution surface.
 

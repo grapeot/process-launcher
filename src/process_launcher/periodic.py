@@ -57,6 +57,29 @@ class PeriodicManager:
             if not task.done():
                 task.cancel()
 
+    def reload_jobs(self, process_manager: ProcessManager, jobs: dict[str, PeriodicJobConfig]) -> dict[str, list[str]]:
+        """Replace periodic declarations and restart scheduler loops.
+
+        Running child processes are not stopped. Existing run records and active run
+        tracking stay intact; the new declarations only affect future starts.
+        """
+        old_jobs = self.jobs
+        added = sorted(set(jobs) - set(old_jobs))
+        removed = sorted(set(old_jobs) - set(jobs))
+        shared = set(old_jobs) & set(jobs)
+        changed = sorted(label for label in shared if old_jobs[label] != jobs[label])
+        unchanged = sorted(label for label in shared if old_jobs[label] == jobs[label])
+
+        self.shutdown()
+        self._tasks = {}
+        self.jobs = jobs
+        self._next_run_at = {label: None for label in jobs}
+        for label, job in self.jobs.items():
+            if job.enabled:
+                self._tasks[label] = asyncio.create_task(self._run_loop(process_manager, job))
+
+        return {"added": added, "removed": removed, "changed": changed, "unchanged": unchanged}
+
     def list_jobs(self) -> list[PeriodicJobState]:
         return [self.get_job(label) for label in sorted(self.jobs)]
 

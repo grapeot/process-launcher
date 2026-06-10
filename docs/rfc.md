@@ -32,12 +32,15 @@ The database includes a `schema_migrations` table. Each migration runs once and 
 
 Recurring schedules are declared in YAML under `periodic_jobs:`. YAML is the only source of truth for periodic job creation, deletion, enablement, command changes, and schedule changes. This mirrors declared always-on services and avoids hidden long-term state created through HTTP.
 
-The periodic HTTP API is read-only:
+The periodic HTTP API is mostly read-only:
 
 - `GET /periodic`
 - `GET /periodic/{label}`
 - `GET /periodic/{label}/runs`
 - `GET /periodic/{label}/runs/{run_id}`
+- `POST /periodic/reload`
+
+`POST /periodic/reload` is a reconcile operation, not a mutation API. It rereads `periodic_jobs` from the YAML config path already used at startup, validates the full config, replaces only the in-memory periodic declarations, and restarts scheduler loops for future runs. It does not reload declared services, server settings, logging settings, storage settings, or environment outside periodic jobs. Active periodic child processes are not stopped and keep the command, env, and timeout they started with.
 
 There is intentionally no `POST /periodic`, `run-now`, `enable`, or `disable` endpoint. Manual validation should use `POST /run` with the same command and a test label.
 
@@ -98,6 +101,8 @@ For each pending job:
 Completed, failed, cancelled, and missed jobs stay in SQLite for inspection and are not rescheduled.
 
 Periodic startup is separate from one-shot startup. The launcher reads YAML declarations, marks any previously `running` periodic runs as `failed` because the new process does not own their child process handles, then starts one scheduler loop per enabled periodic job. Disabled periodic jobs remain visible through `GET /periodic` but do not run.
+
+Periodic reload follows the same declaration parsing path as startup but skips stale-run recovery. Already running child processes still have live process handles, so reload preserves active run tracking and only replaces future scheduler loops. If parsing or validation fails, the existing periodic manager remains unchanged.
 
 Each periodic run starts as a normal tracked process and writes to the same output log and heartbeat paths as a one-off `/run` command. The periodic run record stores `scheduled_for`, `started_at`, `completed_at`, `status`, `result_pid`, `output_file`, and `last_error`.
 
