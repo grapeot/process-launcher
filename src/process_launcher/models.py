@@ -223,6 +223,14 @@ class PeriodicJobState(BaseModel):
     runtime: PeriodicRuntime
 
 
+class PeriodicReloadResult(BaseModel):
+    status: str
+    added: list[str] = Field(default_factory=list)
+    removed: list[str] = Field(default_factory=list)
+    changed: list[str] = Field(default_factory=list)
+    unchanged: list[str] = Field(default_factory=list)
+
+
 class ScheduledJob(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     label: str | None = None

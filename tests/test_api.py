@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -11,6 +12,7 @@ import yaml
 from fastapi import FastAPI
 
 from process_launcher.config import load_config
+from process_launcher.models import PeriodicRun, PeriodicRunStatus
 from process_launcher.server import create_app, initialize_app_state, shutdown_app_state
 
 
@@ -212,6 +214,189 @@ async def test_periodic_interval_job_records_run(tmp_path: Path) -> None:
                     return
                 await asyncio.sleep(0.05)
             raise AssertionError("periodic run did not complete")
+    finally:
+        await shutdown_app_state(application)
+
+
+@pytest.mark.asyncio
+async def test_reload_periodic_jobs_updates_future_declarations(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_path = config_dir / "launcher.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "logging": {"dir": "logs"},
+                "storage": {"sqlite_path": "state/launcher.db"},
+                "periodic_jobs": {
+                    "reload_demo": {
+                        "label": "reload_demo",
+                        "command": [sys.executable, "-c", "print('old')"],
+                        "timeout": 300,
+                        "schedule": {"type": "daily", "time": "08:00", "timezone": "UTC"},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    application: FastAPI = create_app(config_path=config_path, config=config)
+    await initialize_app_state(application, config, config_path)
+    try:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as local_client:
+            before = await local_client.get("/periodic/reload_demo")
+            assert before.json()["declared"]["timeout"] == 300
+
+            config_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "logging": {"dir": "logs"},
+                        "storage": {"sqlite_path": "state/launcher.db"},
+                        "periodic_jobs": {
+                            "reload_demo": {
+                                "label": "reload_demo",
+                                "command": [sys.executable, "-c", "print('new')"],
+                                "timeout": 600,
+                                "schedule": {"type": "daily", "time": "08:00", "timezone": "UTC"},
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            reload_response = await local_client.post("/periodic/reload")
+            assert reload_response.status_code == 200
+            assert reload_response.json()["changed"] == ["reload_demo"]
+
+            after = await local_client.get("/periodic/reload_demo")
+            assert after.json()["declared"]["timeout"] == 600
+            assert after.json()["declared"]["command"][-1] == "print('new')"
+    finally:
+        await shutdown_app_state(application)
+
+
+@pytest.mark.asyncio
+async def test_reload_periodic_jobs_preserves_active_runs(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_path = config_dir / "launcher.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "logging": {"dir": "logs"},
+                "storage": {"sqlite_path": "state/launcher.db"},
+                "periodic_jobs": {
+                    "active_demo": {
+                        "label": "active_demo",
+                        "command": [sys.executable, "-c", "print('scheduled')"],
+                        "timeout": 300,
+                        "schedule": {"type": "daily", "time": "08:00", "timezone": "UTC"},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    application: FastAPI = create_app(config_path=config_path, config=config)
+    await initialize_app_state(application, config, config_path)
+    try:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as local_client:
+            run_response = await local_client.post(
+                "/run",
+                json={
+                    "command": [sys.executable, "-c", "import time; time.sleep(2)"],
+                    "label": "active_demo",
+                    "timeout": 300,
+                },
+            )
+            pid = run_response.json()["pid"]
+            periodic_manager = application.state.periodic_manager
+            active_run = periodic_manager.store.list_periodic_runs("active_demo")
+            assert active_run == []
+
+            # Simulate a periodic run already tracked by the manager; reload should
+            # not clear it or stop the child process.
+            tracked = PeriodicRun(
+                label="active_demo",
+                command=[sys.executable, "-c", "import time; time.sleep(2)"],
+                timeout=300,
+                scheduled_for=datetime.now(),
+                status=PeriodicRunStatus.RUNNING,
+                result_pid=pid,
+            )
+            periodic_manager._update_run(tracked)
+
+            config_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "logging": {"dir": "logs"},
+                        "storage": {"sqlite_path": "state/launcher.db"},
+                        "periodic_jobs": {
+                            "active_demo": {
+                                "label": "active_demo",
+                                "command": [sys.executable, "-c", "print('future')"],
+                                "timeout": 600,
+                                "schedule": {"type": "daily", "time": "08:00", "timezone": "UTC"},
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            reload_response = await local_client.post("/periodic/reload")
+            assert reload_response.status_code == 200
+
+            state = await local_client.get("/periodic/active_demo")
+            assert state.json()["declared"]["timeout"] == 600
+            assert state.json()["runtime"]["active_pid"] == pid
+            process = await local_client.get(f"/processes/{pid}")
+            assert process.json()["status"] == "running"
+    finally:
+        await shutdown_app_state(application)
+
+
+@pytest.mark.asyncio
+async def test_reload_periodic_jobs_keeps_old_config_on_invalid_yaml(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_path = config_dir / "launcher.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "logging": {"dir": "logs"},
+                "storage": {"sqlite_path": "state/launcher.db"},
+                "periodic_jobs": {
+                    "stable_demo": {
+                        "label": "stable_demo",
+                        "command": [sys.executable, "-c", "print('stable')"],
+                        "timeout": 300,
+                        "schedule": {"type": "daily", "time": "08:00", "timezone": "UTC"},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    application: FastAPI = create_app(config_path=config_path, config=config)
+    await initialize_app_state(application, config, config_path)
+    try:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as local_client:
+            config_path.write_text("periodic_jobs: [", encoding="utf-8")
+
+            reload_response = await local_client.post("/periodic/reload")
+            assert reload_response.status_code == 400
+
+            state = await local_client.get("/periodic/stable_demo")
+            assert state.status_code == 200
+            assert state.json()["declared"]["timeout"] == 300
     finally:
         await shutdown_app_state(application)
 

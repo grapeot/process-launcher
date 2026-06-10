@@ -12,7 +12,16 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 
 from .config import load_config
 from .log import HeartbeatLogger, OutputLogger
-from .models import LauncherConfig, PeriodicJobState, PeriodicRun, ProcessInfo, RunRequest, RunResponse, ScheduledJob
+from .models import (
+    LauncherConfig,
+    PeriodicJobState,
+    PeriodicReloadResult,
+    PeriodicRun,
+    ProcessInfo,
+    RunRequest,
+    RunResponse,
+    ScheduledJob,
+)
 from .periodic import PeriodicManager
 from .process import ProcessManager
 from .scheduled import ScheduledManager
@@ -104,6 +113,22 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
             return periodic_manager.get_run(label, run_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="periodic run not found") from exc
+
+    @app.post("/periodic/reload", response_model=PeriodicReloadResult)
+    async def reload_periodic() -> PeriodicReloadResult:
+        if resolved_config_path is None:
+            raise HTTPException(status_code=409, detail="config path is required for periodic reload")
+        try:
+            reloaded_config = load_config(resolved_config_path)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"config reload failed: {exc}") from exc
+        periodic_manager: PeriodicManager = app.state.periodic_manager
+        process_manager: ProcessManager = app.state.process_manager
+        diff = periodic_manager.reload_jobs(process_manager, reloaded_config.periodic_jobs)
+        app.state.launcher_config = app.state.launcher_config.model_copy(
+            update={"periodic_jobs": reloaded_config.periodic_jobs}
+        )
+        return PeriodicReloadResult(status="reloaded", **diff)
 
     @app.post("/scheduled/{job_id}/cancel", response_model=ScheduledJob)
     async def cancel_scheduled(job_id: str) -> ScheduledJob:
