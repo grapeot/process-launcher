@@ -4,6 +4,10 @@
 
 Use Process Launcher when a local workflow needs to start a command through a trusted localhost API, inspect process status, read output logs, schedule durable one-shot jobs, run a small set of YAML-declared always-on services, or run YAML-declared periodic jobs.
 
+## Trigger Words
+
+Match this skill on phrases about launching or scheduling local commands: "run in background", "schedule", "set a reminder", "delay this", "run in N minutes/hours", "run tomorrow morning", "recurring job", "periodic job", "every day/week", or the tool name ("process launcher", "background job manager"). Chinese triggers in active use: 延时执行、定时执行、几分钟后执行、几小时后执行、明天早上、定时任务、延迟任务、周期任务、用 launcher 跑、background job manager、process launcher、schedule、set a reminder。
+
 ## Why Process Launcher Exists (macOS TCC)
 
 Process Launcher started as a solution to a macOS-specific problem. Apple's TCC (Transparency Consent and Control) framework restricts access to Microphone, Camera, Screen Recording, Accessibility, Full Disk Access, and protected folders. The system checks the responsible process and its GUI application ancestry. A plain background process spawned by cron, launchd, or PM2 has no GUI ancestor and therefore inherits no TCC permissions.
@@ -11,6 +15,8 @@ Process Launcher started as a solution to a macOS-specific problem. Apple's TCC 
 Process Launcher acts as a bridge. Start it from an interactive terminal (Terminal.app, iTerm2), and every job it launches inherits that terminal's TCC grants. All TCC-sensitive work goes through this one process, so you do not need each automation script to reconnect to a GUI session.
 
 **This only works if the launcher itself runs inside an interactive GUI terminal session.** Background supervisors break the chain. See the Start section below for details.
+
+Keychain is a separate concern from TCC. Keychain has its own access control based on code identity and team ID, and interactive terminal context mainly helps the `/usr/bin/security` prompts appear in the right session. If a task needs Keychain access, test it independently of the TCC chain rather than assuming terminal context is enough.
 
 ## Setup
 
@@ -58,7 +64,7 @@ Health check:
 curl -sf http://127.0.0.1:7997/health
 ```
 
-Run a command:
+Run a command. A `command` string runs through a shell (`shell=True`, so pipes and redirection work); a `command` array execs directly, which is safer but has no shell features.
 
 ```bash
 curl -sf -X POST http://127.0.0.1:7997/run \
@@ -66,12 +72,38 @@ curl -sf -X POST http://127.0.0.1:7997/run \
   -d '{"command": ["python", "-c", "print(\"hello\")"], "label": "demo"}'
 ```
 
+RunRequest fields:
+
+| Field | Type | Required | Notes |
+|------|------|------|------|
+| command | string or string[] | yes | Command to run. A string runs through a shell; an array execs directly. |
+| cwd | string | | Working directory. |
+| env | object | | Extra environment variables. |
+| label | string | | Label used to identify the process (affects log file names). |
+| timeout | float | | Seconds before the child is killed. |
+| delay_seconds | float | | Delay before launch, persisted to SQLite and recovered after restart. |
+| run_at | datetime | | Absolute launch time; mutually exclusive with `delay_seconds`. |
+| misfire_policy | string | | Recovery when `run_at` passed while the launcher was down: `run_immediately` / `skip` / `fail`. |
+
 List processes and read output:
 
 ```bash
 curl -sf http://127.0.0.1:7997/processes
+curl -sf 'http://127.0.0.1:7997/processes?running_only=true'
+curl -sf http://127.0.0.1:7997/processes/{pid}
+curl -sf -X POST http://127.0.0.1:7997/processes/{pid}/stop
 curl -sf http://127.0.0.1:7997/processes/{pid}/output
+curl -sf 'http://127.0.0.1:7997/processes/{pid}/output?tail=50'
 ```
+
+Tracked process states:
+
+| State | Meaning |
+|------|------|
+| running | Child process is still active. |
+| exited | Child exited (zero or non-zero). |
+| killed | Stopped manually or killed by timeout. |
+| circuit_breaker | An always-on service tripped its breaker after repeated failures. |
 
 Inspect YAML-declared periodic jobs and run history:
 
@@ -82,7 +114,7 @@ curl -sf http://127.0.0.1:7997/periodic/{label}/runs
 curl -sf http://127.0.0.1:7997/periodic/{label}/runs/{run_id}
 ```
 
-There are no periodic write endpoints. To test a periodic command before enabling it in YAML, submit a one-off `/run` request with a test label.
+There are no periodic write endpoints. To test a periodic command before enabling it in YAML, submit a one-off `/run` request with a test label. `POST /periodic/reload` hot-reloads only the `periodic_jobs:` section of `config/launcher.yaml` into the running launcher; it does not touch declared services, logging, storage, or server settings, and a run already in flight keeps the configuration it started with.
 
 Schedule and cancel a durable delayed launch:
 
@@ -99,14 +131,40 @@ curl -sf http://127.0.0.1:7997/scheduled
 curl -sf -X POST http://127.0.0.1:7997/scheduled/{job_id}/cancel
 ```
 
-Scheduled jobs are persisted in SQLite and recovered on launcher restart. If `run_at` passed while the launcher was down, `misfire_policy` controls recovery: `run_immediately`, `skip`, or `fail`. A scheduled job becomes `completed` only after its child process exits with code `0`; non-zero exits become `failed`.
+Scheduled jobs are persisted in SQLite and recovered on launcher restart. If `run_at` passed while the launcher was down, `misfire_policy` controls recovery: `run_immediately`, `skip`, or `fail`. A scheduled job becomes `completed` only after its child process exits with code `0`; non-zero exits become `failed`. Note the recovery boundary across restarts: scheduled jobs are persisted and restored, regular process handles live only in memory (so `/processes` starts fresh after a restart), and always-on services restart from the YAML declaration.
 
-Inspect logs:
+ScheduledJob fields:
+
+| Field | Type | Notes |
+|------|------|------|
+| id | string | Job ID (12-hex). |
+| label | string? | Label. |
+| command | string or string[] | Command. |
+| cwd | string? | Working directory. |
+| env | object | Environment variables. |
+| timeout | float? | Execution timeout. |
+| scheduled_at | datetime | Submission time. |
+| run_at | datetime | Planned launch time. |
+| status | string | pending / running / completed / failed / cancelled / missed. |
+| misfire_policy | string | Recovery policy after a missed run_at. |
+| result_pid | int? | Actual PID once executed. |
+| last_error | string? | Failure or missed-run reason. |
+
+Inspect logs. The bare `/logs` path is **not** a valid endpoint and returns 404; always use `/logs/heartbeat` or `/logs/output`.
 
 ```bash
 curl -sf http://127.0.0.1:7997/logs/heartbeat
+curl -sf 'http://127.0.0.1:7997/logs/heartbeat?event=PROCESS_EXITED'
+curl -sf 'http://127.0.0.1:7997/logs/heartbeat?label=newsletter&limit=10'
 curl -sf http://127.0.0.1:7997/logs/output
+curl -sf http://127.0.0.1:7997/logs/output/{filename}
+curl -sf 'http://127.0.0.1:7997/logs/output/{filename}?tail=50'
 ```
+
+On-disk log layout (auto-cleaned after 30 days):
+
+- Heartbeat: `logs/heartbeat_{YYYY-MM-DD}.jsonl`
+- Output: `logs/output/{label}_{YYYYMMDD_HHMMSS}.log`
 
 Restart a YAML-declared service:
 
