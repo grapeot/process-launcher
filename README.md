@@ -13,6 +13,7 @@ The server binds to `127.0.0.1` by default. It accepts arbitrary commands from l
 - Scheduled jobs complete only when their child process exits with code `0`; failed child processes mark the scheduled job failed.
 - Dry-run the target command before scheduling when the CLI supports it. If no dry-run exists, make that risk explicit before creating a durable schedule.
 - Always-on services can be declared in YAML with restart delay, restart window, and circuit breaker limits.
+- Periodic jobs can be declared in YAML with daily, weekly, fixed-interval, or cron-compatible schedules; inspect them and their run history through read-only `/periodic` endpoints and hot-reload with `POST /periodic/reload`.
 - Heartbeat and output logs are retained locally and ignored by git.
 
 ## Install
@@ -40,6 +41,8 @@ cp config/launcher.example.yaml config/launcher.yaml
 `config/launcher.yaml` is intentionally ignored by git. Keep real local paths, service names, tokens, and `.env` references there. The tracked repository only ships `config/launcher.example.yaml` with generic placeholder values.
 
 Always-on services are declarative-only. Define them under `services:` in YAML; `/run` does not create always-on services dynamically, and there is no service list/create API. Inspect declared services through the regular process and log endpoints. Use `POST /declared-services/{label}/restart` only to restart a service already declared in YAML.
+
+Periodic jobs are declarative-only too. Define them under `periodic_jobs:` in YAML (schedule types: `daily`, `weekly`, `interval`, or `cron`); there are no periodic write endpoints. Inspect declarations, next run time, and run history through the read-only `/periodic` endpoints, and reload the `periodic_jobs:` section into a running launcher with `POST /periodic/reload`. See `config/launcher.example.yaml` for the schedule shape.
 
 ## Run
 
