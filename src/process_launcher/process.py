@@ -21,6 +21,7 @@ class TrackedProcess:
     output_path: Path
     stop_requested: bool = False
     timeout_task: asyncio.Task[None] | None = None
+    output_thread: threading.Thread | None = None
 
 
 class ProcessManager:
@@ -88,6 +89,7 @@ class ProcessManager:
         )
 
         output_thread = threading.Thread(target=self._stream_output, args=(handle,), daemon=True)
+        handle.output_thread = output_thread
         output_thread.start()
         watcher = threading.Thread(target=self._wait_for_exit, args=(handle, on_exit), daemon=True)
         watcher.start()
@@ -155,6 +157,8 @@ class ProcessManager:
 
     def _wait_for_exit(self, handle: TrackedProcess, on_exit: ExitCallback | None) -> None:
         exit_code = handle.popen.wait()
+        if handle.output_thread is not None:
+            handle.output_thread.join(timeout=5.0)
         exited_at = utc_now()
         duration = max((exited_at - handle.info.started_at).total_seconds(), 0.0)
         if handle.stop_requested:
