@@ -111,6 +111,7 @@ Private paths, real service names, secrets, and local job recipes belong in the 
 - `GET /health` reports server liveness.
 - `POST /run` starts a command immediately or creates a durable scheduled launch with `delay_seconds` or `run_at`.
 - `GET /scheduled` lists delayed jobs.
+- `PATCH /scheduled/{job_id}` updates a pending delayed job's launch metadata, such as `run_at`.
 - `POST /scheduled/{job_id}/cancel` cancels a pending delayed job.
 - `GET /periodic` lists YAML-declared periodic jobs with runtime state.
 - `GET /periodic/{label}` returns one periodic job.
@@ -133,6 +134,8 @@ The public repository contains the generic tool, tests, docs, and skill. A priva
 ## Durable Scheduling
 
 Delayed jobs are stored in SQLite under `storage.sqlite_path`, relative to the config base directory when a relative path is used. On startup, Process Launcher reloads `pending` jobs and schedules them again. `completed`, `failed`, `cancelled`, and `missed` jobs remain queryable but are not reloaded.
+
+Pending scheduled jobs can be updated through `PATCH /scheduled/{job_id}`. The launcher cancels the existing in-memory delay task, persists the edited job, and registers a new delay task for the updated `run_at`. Jobs that have already started or reached a terminal state cannot be updated.
 
 A scheduled job is `completed` only after its child process exits with code `0`. If the child process exits non-zero, is killed, or cannot be started, the scheduled job becomes `failed` and records `last_error`. Starting the child process successfully is not enough to mark the scheduled job complete.
 

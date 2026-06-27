@@ -22,6 +22,8 @@ Tracked process handles stay in memory. Restarting the launcher starts with an e
 
 Delayed and absolute-time scheduled jobs are stored in SQLite. YAML remains the bootstrap config for server, logging, storage, and declared always-on services. SQLite owns runtime lifecycle records for scheduled work: `pending`, `running`, `completed`, `failed`, `cancelled`, and `missed`.
 
+Pending scheduled jobs can be updated through `PATCH /scheduled/{job_id}`. The update operation is intentionally narrow: it edits launch metadata such as `run_at`, `label`, `timeout`, or `misfire_policy` while preserving the job id, command, cwd, and env. The scheduler cancels the existing in-memory delay task, persists the edited row, and registers a new delay task. Running or terminal jobs return a conflict instead of mutating history.
+
 Scheduled job completion follows the child process exit result. The scheduler marks a job `running` after it starts the child process, then waits for the process exit callback. Exit code `0` marks the job `completed`; non-zero exit, killed status, or start failure marks it `failed` with `last_error`. This keeps the scheduling API honest for commands that start successfully but fail immediately.
 
 Dry-run validation stays at the caller layer. Many scheduled commands are tool-specific CLIs with their own `--dry-run`, `--check`, or preview modes. The launcher cannot infer those flags from an arbitrary command safely, so it records and executes the command it receives. Agents and scripts should run the target command's dry-run path before creating a durable schedule. When no dry-run exists, they should disclose that limitation before scheduling.
@@ -83,6 +85,7 @@ caller -> POST /run with delay_seconds/run_at -> SQLite scheduled_jobs
 
 caller -> GET /processes/{pid} -> in-memory process table
 caller -> GET /scheduled -> SQLite scheduled_jobs
+caller -> PATCH /scheduled/{id} -> cancel old delay task -> update SQLite row -> new delay task
 caller -> GET /periodic -> YAML periodic_jobs + SQLite periodic_runs
 caller -> GET /logs/output/{file} -> local output log
 ```

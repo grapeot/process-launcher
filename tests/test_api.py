@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -434,6 +434,58 @@ async def test_cancel_scheduled_job(client: httpx.AsyncClient) -> None:
 
     verify = await client.get("/scheduled")
     assert verify.json()[0]["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_update_scheduled_job_run_at(client: httpx.AsyncClient) -> None:
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('updated')"], "label": "update_me", "delay_seconds": 60},
+    )
+    scheduled = await client.get("/scheduled")
+    job = scheduled.json()[0]
+    new_run_at = datetime.now() + timedelta(seconds=0.2)
+
+    update = await client.patch(f"/scheduled/{job['id']}", json={"run_at": new_run_at.isoformat()})
+    assert update.status_code == 200
+    assert update.json()["status"] == "pending"
+    assert update.json()["run_at"].startswith(new_run_at.isoformat(timespec="seconds"))
+
+    deadline = asyncio.get_running_loop().time() + 3.0
+    while asyncio.get_running_loop().time() < deadline:
+        verify = await client.get("/scheduled")
+        jobs = [j for j in verify.json() if j["label"] == "update_me"]
+        if jobs and jobs[0]["status"] == "completed":
+            assert jobs[0]["result_pid"] is not None and jobs[0]["result_pid"] > 0
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("updated scheduled job did not complete")
+
+
+@pytest.mark.asyncio
+async def test_update_scheduled_job_rejects_non_pending(client: httpx.AsyncClient) -> None:
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('done')"], "label": "finished", "delay_seconds": 0.1},
+    )
+    await asyncio.sleep(1.0)
+    scheduled = await client.get("/scheduled")
+    job = [j for j in scheduled.json() if j["label"] == "finished"][0]
+
+    update = await client.patch(
+        f"/scheduled/{job['id']}",
+        json={"run_at": (datetime.now() + timedelta(seconds=10)).isoformat()},
+    )
+    assert update.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_update_nonexistent_scheduled_job_returns_404(client: httpx.AsyncClient) -> None:
+    response = await client.patch(
+        "/scheduled/nonexistent_id",
+        json={"run_at": (datetime.now() + timedelta(seconds=10)).isoformat()},
+    )
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio
