@@ -7,7 +7,7 @@ name = "process-launcher"
 version = "0.1.0"
 description = "Localhost process launcher with a FastAPI control surface."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = "MIT"
 authors = [{ name = "Process Launcher contributors" }]
 keywords = ["fastapi", "process", "launcher", "localhost", "automation"]
@@ -15,7 +15,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: FastAPI",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
