@@ -22,6 +22,7 @@ python -m pytest -v -m live_integration
 - Heartbeat and output log writing, filtering, and retention cleanup.
 - FastAPI endpoints for health, process control, scheduled jobs, logs, and OpenAPI.
 - SQLite schema migration and durable scheduled job recovery.
+- Pending scheduled job updates: rescheduling updates SQLite state, replaces the in-memory delay task, rejects non-pending jobs, and returns 404 for unknown job ids.
 - YAML-declared periodic job parsing, next-run calculation, read-only API endpoints, run records, and stale-running recovery.
 - Misfire policies for jobs whose `run_at` passes while the launcher is down.
 - Scheduled job status follows child process exit code: `0` completes, non-zero fails.

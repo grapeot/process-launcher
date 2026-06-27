@@ -55,6 +55,21 @@ class RunResponse(BaseModel):
     output_file: str | None = None
 
 
+class ScheduledUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_at: datetime | None = Field(default=None, description="New absolute launch time.")
+    label: str | None = None
+    timeout: float | None = Field(default=None, gt=0)
+    misfire_policy: "MisfirePolicy | None" = None
+
+    @model_validator(mode="after")
+    def validate_update(self) -> Self:
+        if self.run_at is None and self.label is None and self.timeout is None and self.misfire_policy is None:
+            raise ValueError("at least one scheduled job field must be provided")
+        return self
+
+
 class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 7997

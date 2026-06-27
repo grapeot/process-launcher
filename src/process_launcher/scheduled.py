@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
-from .models import MisfirePolicy, ProcessInfo, RunRequest, ScheduledJob, ScheduledStatus
+from .models import MisfirePolicy, ProcessInfo, RunRequest, ScheduledJob, ScheduledStatus, ScheduledUpdateRequest
 from .process import ProcessManager
 from .storage import SQLiteStore
 
@@ -76,6 +76,23 @@ class ScheduledManager:
         self._update_job(job.model_copy(update={"status": ScheduledStatus.CANCELLED, "cancelled_at": datetime.now()}))
         return self._jobs[job_id]
 
+    def update(self, process_manager: ProcessManager, job_id: str, request: ScheduledUpdateRequest) -> ScheduledJob:
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        if job.status != ScheduledStatus.PENDING:
+            raise ValueError(f"Cannot update job in status {job.status.value}")
+
+        task = self._tasks.pop(job_id, None)
+        if task and not task.done():
+            task.cancel()
+
+        updates = request.model_dump(exclude_unset=True, exclude_none=True)
+        updated_job = job.model_copy(update=updates)
+        self._update_job(updated_job)
+        self.schedule(process_manager, updated_job, self._request_from_job(updated_job))
+        return updated_job
+
     def list_jobs(self) -> list[ScheduledJob]:
         return sorted(self._jobs.values(), key=lambda j: j.scheduled_at)
 
@@ -112,6 +129,7 @@ class ScheduledManager:
             env=job.env,
             label=job.label,
             timeout=job.timeout,
+            misfire_policy=job.misfire_policy,
         )
 
 

@@ -21,6 +21,7 @@ from .models import (
     RunRequest,
     RunResponse,
     ScheduledJob,
+    ScheduledUpdateRequest,
 )
 from .periodic import PeriodicManager
 from .process import ProcessManager
@@ -135,6 +136,17 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
         scheduled_manager: ScheduledManager = app.state.scheduled_manager
         try:
             return scheduled_manager.cancel(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="scheduled job not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.patch("/scheduled/{job_id}", response_model=ScheduledJob)
+    async def update_scheduled(job_id: str, request: ScheduledUpdateRequest) -> ScheduledJob:
+        scheduled_manager: ScheduledManager = app.state.scheduled_manager
+        process_manager: ProcessManager = app.state.process_manager
+        try:
+            return scheduled_manager.update(process_manager, job_id, request)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="scheduled job not found") from exc
         except ValueError as exc:
