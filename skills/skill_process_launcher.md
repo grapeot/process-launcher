@@ -136,6 +136,35 @@ curl -sf -X POST http://127.0.0.1:7997/scheduled/{job_id}/cancel
 
 Scheduled jobs are persisted in SQLite and recovered on launcher restart. Pending jobs can be updated with `PATCH /scheduled/{job_id}`; the launcher replaces the old in-memory delay task and keeps the same job id. Running, completed, failed, cancelled, or missed jobs cannot be updated. If `run_at` passed while the launcher was down, `misfire_policy` controls recovery: `run_immediately`, `skip`, or `fail`. A scheduled job becomes `completed` only after its child process exits with code `0`; non-zero exits become `failed`. Note the recovery boundary across restarts: scheduled jobs are persisted and restored, regular process handles live only in memory (so `/processes` starts fresh after a restart), and always-on services restart from the YAML declaration.
 
+When `POST /run` creates a delayed job, the immediate response may show `pid: 0` and `output_file: null` because no child process has started yet. Treat that as a scheduled handoff, not as a process launch. Call `GET /scheduled` and match by label, command, and `run_at` to get the durable job id for later cancellation or audit.
+
+### OpenCode Same-Session Reminders
+
+For "remind me in N minutes in this same OpenCode session" workflows, Process Launcher should schedule an `opencode_skill append` command rather than a raw `sleep` or a new OpenCode submission. The OpenCode skill owns session inference, dry-run checks, and prompt storage; Process Launcher owns durable time-based execution.
+
+Use a command array with absolute paths and a stable prompt file:
+
+```bash
+curl -sf -X POST http://127.0.0.1:7997/run \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "command": ["/absolute/path/to/opencode_skill/.venv/bin/python", "-m", "opencode_skill", "append", "--session-id", "ses_example", "--prompt-file", "/absolute/path/to/opencode_skill/prompts/reminder.md", "--send-timeout", "5", "--json"],
+    "cwd": "/absolute/path/to/opencode_skill",
+    "label": "opencode_append_reminder",
+    "delay_seconds": 600,
+    "timeout": 300
+  }'
+```
+
+Prefer non-blocking append handoff for reminders. Avoid adding `--wait` unless the user explicitly wants the scheduled child process to block until OpenCode completes. A timed-out HTTP request can make the child process exit non-zero, so the scheduled job becomes `failed`, even though OpenCode may already have appended the message and produced a visible response in the session. In that case, inspect `/processes/{pid}/output` for the timeout and inspect the OpenCode session timeline separately before retrying.
+
+Verification has two layers:
+
+1. Process Launcher layer: `/scheduled/{job}` or `/scheduled` shows whether the delayed child process started and whether it exited with code `0`. After start, `/processes/{pid}` gives the output file, and `/processes/{pid}/output` is the best way to read failures.
+2. OpenCode layer: the target session timeline is the source of truth for whether the reminder prompt was appended and answered. Do not infer model success from Launcher status alone.
+
+Do not rely on `/logs/output?label=...` for targeted debugging unless the server version is known to support that filter. The reliable path is `/processes/{pid}` followed by `/processes/{pid}/output`.
+
 ScheduledJob fields:
 
 | Field | Type | Notes |
