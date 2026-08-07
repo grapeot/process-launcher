@@ -213,3 +213,7 @@ This skill is intentionally generic. Keep user-specific aliases, real job recipe
 ## Safety Notes
 
 `POST /run` executes commands as the launcher user. Use this service only on trusted localhost interfaces unless you add an authentication and authorization layer.
+
+**AI agent 不得自行重启 launcher。** Launcher 必须从交互式 GUI 终端启动才能继承 TCC 权限（Local Network、麦克风等）。如果 AI agent 用 SSH、launchd 或脚本拉起 launcher，TCC 链断裂，所有子进程失去权限。`POST /shutdown` 同理——AI agent 不得调用，因为重启后 launcher 会在没有 GUI 上下文的环境里跑起来。
+
+如果需要重启 launcher（例如新增了 `services` 条目需要重新加载），**AI agent 必须请求人类手动操作**。
