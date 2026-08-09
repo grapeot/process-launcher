@@ -128,11 +128,22 @@ curl -sf -X POST http://127.0.0.1:7997/run \
   -d '{"command": ["python", "daily.py"], "label": "absolute_time", "run_at": "2026-06-10T09:00:00-07:00", "misfire_policy": "run_immediately"}'
 
 curl -sf http://127.0.0.1:7997/scheduled
+curl -sf 'http://127.0.0.1:7997/scheduled?status=pending&label=publish'
+curl -sf 'http://127.0.0.1:7997/scheduled?include_terminated=true'
 curl -sf -X PATCH http://127.0.0.1:7997/scheduled/{job_id} \
   -H 'Content-Type: application/json' \
   -d '{"run_at": "2026-06-11T08:00:00-07:00"}'
 curl -sf -X POST http://127.0.0.1:7997/scheduled/{job_id}/cancel
 ```
+
+`GET /scheduled` defaults to returning only non-terminal jobs (pending + running). Terminal jobs (completed, failed, cancelled, missed) are hidden unless explicitly requested. Query parameters:
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `status` | — | Comma-separated status filter (e.g. `pending`, `pending,running`, `completed`). Special value `all` disables filtering. Takes precedence over `include_terminated`. |
+| `label` | — | Substring match on job label. |
+| `limit` | — | Maximum number of results (sorted by `scheduled_at` ascending). |
+| `include_terminated` | `false` | Set to `true` to include terminal jobs (old behavior). Ignored when `status` is provided. |
 
 Scheduled jobs are persisted in SQLite and recovered on launcher restart. Pending jobs can be updated with `PATCH /scheduled/{job_id}`; the launcher replaces the old in-memory delay task and keeps the same job id. Running, completed, failed, cancelled, or missed jobs cannot be updated. If `run_at` passed while the launcher was down, `misfire_policy` controls recovery: `run_immediately`, `skip`, or `fail`. A scheduled job becomes `completed` only after its child process exits with code `0`; non-zero exits become `failed`. Note the recovery boundary across restarts: scheduled jobs are persisted and restored, regular process handles live only in memory (so `/processes` starts fresh after a restart), and always-on services restart from the YAML declaration.
 
