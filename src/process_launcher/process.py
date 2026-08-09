@@ -22,6 +22,7 @@ class TrackedProcess:
     stop_requested: bool = False
     timeout_task: asyncio.Task[None] | None = None
     output_thread: threading.Thread | None = None
+    watcher_thread: threading.Thread | None = None
 
 
 class ProcessManager:
@@ -92,6 +93,7 @@ class ProcessManager:
         handle.output_thread = output_thread
         output_thread.start()
         watcher = threading.Thread(target=self._wait_for_exit, args=(handle, on_exit), daemon=True)
+        handle.watcher_thread = watcher
         watcher.start()
 
         if request.timeout:
@@ -111,12 +113,20 @@ class ProcessManager:
         except subprocess.TimeoutExpired:
             handle.popen.kill()
             await asyncio.to_thread(handle.popen.wait)
+        await self._join_handle_threads(handle)
         return handle.info
 
     async def stop_all(self, *, grace_period: float = 1.0) -> None:
         running = [pid for pid, handle in self.processes.items() if handle.info.status == ProcessStatus.RUNNING]
         for pid in running:
             await self.stop_process(pid, grace_period=grace_period)
+        for handle in list(self.processes.values()):
+            await self._join_handle_threads(handle)
+
+    async def _join_handle_threads(self, handle: TrackedProcess, timeout: float = 5.0) -> None:
+        for thread in (handle.output_thread, handle.watcher_thread):
+            if thread is not None and thread.is_alive():
+                await asyncio.to_thread(thread.join, timeout)
 
     def list_processes(self, *, running_only: bool = False) -> list[ProcessInfo]:
         items = [handle.info for handle in self.processes.values()]
