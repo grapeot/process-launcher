@@ -93,8 +93,19 @@ class ScheduledManager:
         self.schedule(process_manager, updated_job, self._request_from_job(updated_job))
         return updated_job
 
-    def list_jobs(self) -> list[ScheduledJob]:
-        return sorted(self._jobs.values(), key=lambda j: j.scheduled_at)
+    def list_jobs(
+        self,
+        *,
+        statuses: set[ScheduledStatus] | None = None,
+        label_substring: str | None = None,
+        limit: int | None = None,
+    ) -> list[ScheduledJob]:
+        jobs = list(self._jobs.values())
+        if statuses is not None:
+            jobs = [job for job in jobs if job.status in statuses]
+        if label_substring is not None:
+            jobs = [job for job in jobs if job.label is not None and label_substring in job.label]
+        return sorted(jobs, key=lambda job: job.scheduled_at)[:limit]
 
     def recover_pending(self, process_manager: ProcessManager) -> None:
         self.store.mark_stale_running_jobs_failed()

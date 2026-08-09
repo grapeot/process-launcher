@@ -106,7 +106,7 @@ def test_scheduled_list_and_cancel(live_client):
     assert r.status_code == 200
     assert r.json()["status"] == "cancelled"
 
-    r = live_client.get("/scheduled")
+    r = live_client.get("/scheduled?include_terminated=true")
     verify = [j for j in r.json() if j.get("id") == job_id]
     assert verify[0]["status"] == "cancelled"
 
@@ -129,7 +129,7 @@ def test_scheduled_completes_after_delay(live_client):
 
     time.sleep(4)
 
-    r = live_client.get("/scheduled")
+    r = live_client.get("/scheduled?include_terminated=true")
     jobs = [j for j in r.json() if j.get("label") == "live_scheduled_done"]
     assert len(jobs) == 1
     assert jobs[0]["status"] == "completed"
