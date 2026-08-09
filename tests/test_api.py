@@ -432,7 +432,7 @@ async def test_cancel_scheduled_job(client: httpx.AsyncClient) -> None:
     assert cancel.status_code == 200
     assert cancel.json()["status"] == "cancelled"
 
-    verify = await client.get("/scheduled")
+    verify = await client.get("/scheduled?include_terminated=true")
     assert verify.json()[0]["status"] == "cancelled"
 
 
@@ -453,7 +453,7 @@ async def test_update_scheduled_job_run_at(client: httpx.AsyncClient) -> None:
 
     deadline = asyncio.get_running_loop().time() + 3.0
     while asyncio.get_running_loop().time() < deadline:
-        verify = await client.get("/scheduled")
+        verify = await client.get("/scheduled?include_terminated=true")
         jobs = [j for j in verify.json() if j["label"] == "update_me"]
         if jobs and jobs[0]["status"] == "completed":
             assert jobs[0]["result_pid"] is not None and jobs[0]["result_pid"] > 0
@@ -469,7 +469,7 @@ async def test_update_scheduled_job_rejects_non_pending(client: httpx.AsyncClien
         json={"command": [sys.executable, "-c", "print('done')"], "label": "finished", "delay_seconds": 0.1},
     )
     await asyncio.sleep(1.0)
-    scheduled = await client.get("/scheduled")
+    scheduled = await client.get("/scheduled?include_terminated=true")
     job = [j for j in scheduled.json() if j["label"] == "finished"][0]
 
     update = await client.patch(
@@ -496,7 +496,7 @@ async def test_cancel_already_completed_scheduled_job_returns_409(client: httpx.
     )
     await asyncio.sleep(1.0)
 
-    scheduled = await client.get("/scheduled")
+    scheduled = await client.get("/scheduled?include_terminated=true")
     jobs = [j for j in scheduled.json() if j["label"] == "fast_delay"]
     assert len(jobs) == 1
     assert jobs[0]["status"] == "completed"
@@ -519,7 +519,7 @@ async def test_scheduled_job_completes_after_delay(client: httpx.AsyncClient) ->
     )
     await asyncio.sleep(1.0)
 
-    scheduled = await client.get("/scheduled")
+    scheduled = await client.get("/scheduled?include_terminated=true")
     jobs = [j for j in scheduled.json() if j["label"] == "completes"]
     assert len(jobs) == 1
     assert jobs[0]["status"] == "completed"
@@ -534,10 +534,145 @@ async def test_scheduled_job_fails_when_process_exits_nonzero(client: httpx.Asyn
     )
     deadline = asyncio.get_running_loop().time() + 3.0
     while asyncio.get_running_loop().time() < deadline:
-        scheduled = await client.get("/scheduled")
+        scheduled = await client.get("/scheduled?include_terminated=true")
         jobs = [j for j in scheduled.json() if j["label"] == "fails"]
         if jobs and jobs[0]["status"] == "failed":
             assert "exit_code=7" in jobs[0]["last_error"]
             return
         await asyncio.sleep(0.05)
     raise AssertionError("scheduled job did not fail after process exit")
+
+
+@pytest.mark.asyncio
+async def test_list_scheduled_defaults_to_non_terminal(client: httpx.AsyncClient) -> None:
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('done')"], "label": "completed_hidden", "delay_seconds": 0.1},
+    )
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('later')"], "label": "pending_visible", "delay_seconds": 60},
+    )
+    await asyncio.sleep(1.0)
+
+    scheduled = await client.get("/scheduled")
+    assert scheduled.status_code == 200
+    labels = [job["label"] for job in scheduled.json()]
+    assert "pending_visible" in labels
+    assert "completed_hidden" not in labels
+
+
+@pytest.mark.asyncio
+async def test_list_scheduled_include_terminated(client: httpx.AsyncClient) -> None:
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('done')"], "label": "completed_visible", "delay_seconds": 0.1},
+    )
+    await asyncio.sleep(1.0)
+
+    scheduled = await client.get("/scheduled?include_terminated=true")
+    jobs = [job for job in scheduled.json() if job["label"] == "completed_visible"]
+    assert len(jobs) == 1
+    assert jobs[0]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_list_scheduled_filter_by_status(client: httpx.AsyncClient) -> None:
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('done')"], "label": "completed_job", "delay_seconds": 0.1},
+    )
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('later')"], "label": "pending_job", "delay_seconds": 60},
+    )
+    await asyncio.sleep(1.0)
+
+    completed = await client.get("/scheduled?status=completed")
+    assert [job["label"] for job in completed.json()] == ["completed_job"]
+    assert all(job["status"] == "completed" for job in completed.json())
+
+    pending = await client.get("/scheduled?status=pending")
+    assert [job["label"] for job in pending.json()] == ["pending_job"]
+    assert all(job["status"] == "pending" for job in pending.json())
+
+
+@pytest.mark.asyncio
+async def test_list_scheduled_comma_separated_status(client: httpx.AsyncClient) -> None:
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('done')"], "label": "mixed_completed", "delay_seconds": 0.1},
+    )
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('later')"], "label": "mixed_pending", "delay_seconds": 60},
+    )
+    await asyncio.sleep(1.0)
+
+    both = await client.get("/scheduled?status=pending,completed")
+    labels = sorted(job["label"] for job in both.json())
+    assert labels == ["mixed_completed", "mixed_pending"]
+
+
+@pytest.mark.asyncio
+async def test_list_scheduled_status_overrides_include_terminated(client: httpx.AsyncClient) -> None:
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('done')"], "label": "precedence_done", "delay_seconds": 0.1},
+    )
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('later')"], "label": "precedence_wait", "delay_seconds": 60},
+    )
+    await asyncio.sleep(1.0)
+
+    result = await client.get("/scheduled?status=pending&include_terminated=true")
+    labels = [job["label"] for job in result.json()]
+    assert labels == ["precedence_wait"]
+
+
+@pytest.mark.asyncio
+async def test_list_scheduled_filter_by_label(client: httpx.AsyncClient) -> None:
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('later')"], "label": "foo_job", "delay_seconds": 60},
+    )
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('later')"], "label": "bar_job", "delay_seconds": 60},
+    )
+
+    scheduled = await client.get("/scheduled?label=foo")
+    assert [job["label"] for job in scheduled.json()] == ["foo_job"]
+
+
+@pytest.mark.asyncio
+async def test_list_scheduled_invalid_status_returns_422(client: httpx.AsyncClient) -> None:
+    response = await client.get("/scheduled?status=bogus")
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_scheduled_status_all_alias(client: httpx.AsyncClient) -> None:
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('done')"], "label": "all_status", "delay_seconds": 0.1},
+    )
+    await asyncio.sleep(1.0)
+
+    scheduled = await client.get("/scheduled?status=all")
+    jobs = [job for job in scheduled.json() if job["label"] == "all_status"]
+    assert len(jobs) == 1
+    assert jobs[0]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_list_scheduled_limit(client: httpx.AsyncClient) -> None:
+    for label in ("first", "second", "third"):
+        await client.post(
+            "/run",
+            json={"command": [sys.executable, "-c", "print('later')"], "label": label, "delay_seconds": 60},
+        )
+
+    scheduled = await client.get("/scheduled?limit=2")
+    assert len(scheduled.json()) == 2

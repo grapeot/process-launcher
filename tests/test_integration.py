@@ -127,7 +127,7 @@ async def test_launcher_restart_recovers_pending_scheduled_job(tmp_path: Path) -
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app_two), base_url="http://test") as client_two:
             deadline = asyncio.get_running_loop().time() + 3.0
             while asyncio.get_running_loop().time() < deadline:
-                jobs = (await client_two.get("/scheduled")).json()
+                jobs = (await client_two.get("/scheduled?include_terminated=true")).json()
                 recovered = [job for job in jobs if job["label"] == "recover_me"]
                 if recovered and recovered[0]["status"] == "completed":
                     break
@@ -168,7 +168,7 @@ async def test_launcher_restart_applies_skip_misfire_policy(tmp_path: Path) -> N
     await initialize_app_state(app_two, load_config(config_path), config_path)
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app_two), base_url="http://test") as client_two:
-            jobs = (await client_two.get("/scheduled")).json()
+            jobs = (await client_two.get("/scheduled?include_terminated=true")).json()
             skipped = [job for job in jobs if job["label"] == "skip_me"]
             assert skipped[0]["status"] == "missed"
             assert (await client_two.get("/processes")).json() == []

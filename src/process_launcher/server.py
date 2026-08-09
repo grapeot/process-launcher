@@ -21,6 +21,7 @@ from .models import (
     RunRequest,
     RunResponse,
     ScheduledJob,
+    ScheduledStatus,
     ScheduledUpdateRequest,
 )
 from .periodic import PeriodicManager
@@ -82,9 +83,23 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
         return await process_manager.start_process(request)
 
     @app.get("/scheduled", response_model=list[ScheduledJob])
-    async def list_scheduled() -> list[ScheduledJob]:
+    async def list_scheduled(
+        status: str | None = Query(default=None, min_length=1),
+        label: str | None = Query(default=None),
+        limit: int | None = Query(default=None, ge=1),
+        include_terminated: bool = Query(default=False),
+    ) -> list[ScheduledJob]:
+        if status is None:
+            statuses = None if include_terminated else {ScheduledStatus.PENDING, ScheduledStatus.RUNNING}
+        elif status == "all":
+            statuses = None
+        else:
+            try:
+                statuses = {ScheduledStatus(value) for value in status.split(",")}
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=f"invalid scheduled status: {exc.args[0]}") from exc
         scheduled_manager: ScheduledManager = app.state.scheduled_manager
-        return scheduled_manager.list_jobs()
+        return scheduled_manager.list_jobs(statuses=statuses, label_substring=label, limit=limit)
 
     @app.get("/periodic", response_model=list[PeriodicJobState])
     async def list_periodic() -> list[PeriodicJobState]:
