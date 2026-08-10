@@ -22,6 +22,7 @@ class TrackedProcess:
     info: ProcessInfo
     output_path: Path
     process_group_id: int | None = None
+    process_group_exited: bool = False
     stop_requested: bool = False
     timeout_task: asyncio.Task[None] | None = None
     output_thread: threading.Thread | None = None
@@ -116,18 +117,18 @@ class ProcessManager:
             return handle.info
 
         handle.stop_requested = True
-        self._signal_process_tree(handle)
-        if not await self._wait_for_process_tree(handle, grace_period):
-            self._signal_process_tree(handle, force=True)
-            await self._wait_for_process_tree(handle, 5.0)
+        if not handle.process_group_exited:
+            self._signal_process_tree(handle)
+            if not await self._wait_for_process_tree(handle, grace_period):
+                self._signal_process_tree(handle, force=True)
+                await self._wait_for_process_tree(handle, 5.0)
         await asyncio.to_thread(handle.popen.wait)
         await self._join_handle_threads(handle)
         return handle.info
 
     async def stop_all(self, *, grace_period: float = 20.0) -> None:
         running = [pid for pid, handle in self.processes.items() if handle.info.status == ProcessStatus.RUNNING]
-        for pid in running:
-            await self.stop_process(pid, grace_period=grace_period)
+        await asyncio.gather(*(self.stop_process(pid, grace_period=grace_period) for pid in running))
         for handle in list(self.processes.values()):
             await self._join_handle_threads(handle)
 
@@ -137,6 +138,9 @@ class ProcessManager:
                 await asyncio.to_thread(thread.join, timeout)
 
     def _signal_process_tree(self, handle: TrackedProcess, *, force: bool = False) -> None:
+        with self._lock:
+            if handle.process_group_exited:
+                return
         try:
             if handle.process_group_id is not None:
                 sig = signal.SIGKILL if force else signal.SIGTERM
@@ -147,6 +151,10 @@ class ProcessManager:
                 handle.popen.terminate()
         except ProcessLookupError:
             return
+
+    def _mark_process_group_exited(self, handle: TrackedProcess) -> None:
+        with self._lock:
+            handle.process_group_exited = True
 
     def _process_tree_exists(self, handle: TrackedProcess) -> bool:
         if handle.process_group_id is None:
@@ -159,12 +167,18 @@ class ProcessManager:
         except PermissionError:
             # Darwin can return EPERM for a recently emptied group. Confirm
             # membership instead of treating EPERM itself as an exit signal.
-            result = subprocess.run(
-                ["ps", "-axo", "pgid="],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            try:
+                result = subprocess.run(
+                    ["ps", "-axo", "pgid="],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=0.5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                return True
+            if result.returncode != 0:
+                return True
             return any(line.strip() == str(handle.process_group_id) for line in result.stdout.splitlines())
 
     async def _wait_for_process_tree(self, handle: TrackedProcess, timeout: float) -> bool:
@@ -173,13 +187,15 @@ class ProcessManager:
                 await asyncio.to_thread(handle.popen.wait, timeout)
             except subprocess.TimeoutExpired:
                 return False
+            self._mark_process_group_exited(handle)
             return True
 
         deadline = asyncio.get_running_loop().time() + timeout
         while asyncio.get_running_loop().time() < deadline:
-            if not self._process_tree_exists(handle):
+            if not await asyncio.to_thread(self._process_tree_exists, handle):
+                self._mark_process_group_exited(handle)
                 return True
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.1)
         return False
 
     def list_processes(self, *, running_only: bool = False) -> list[ProcessInfo]:
@@ -222,7 +238,8 @@ class ProcessManager:
     def _wait_for_exit(self, handle: TrackedProcess, on_exit: ExitCallback | None) -> None:
         exit_code = handle.popen.wait()
         while self._process_tree_exists(handle):
-            time.sleep(0.05)
+            time.sleep(0.1)
+        self._mark_process_group_exited(handle)
         if handle.output_thread is not None:
             handle.output_thread.join(timeout=5.0)
         exited_at = utc_now()
