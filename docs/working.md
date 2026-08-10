@@ -38,6 +38,7 @@ The launcher must be started from an interactive terminal session to act as a ma
 
 - Each launched command runs in its own process group on POSIX systems.
 - Stop and restart operations signal the entire group, allow 20 seconds for graceful cleanup, and only then escalate to `SIGKILL`.
+- A process remains tracked until its complete group exits, even if the original group leader exits first. Execution timeouts retain a one-second termination grace rather than the longer manual-stop grace.
 - This prevents shell wrappers or supervisors from exiting while their ffmpeg or worker descendants continue as orphans.
 
 ## Release Checklist

@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -115,9 +116,9 @@ class ProcessManager:
             return handle.info
 
         handle.stop_requested = True
-        self._signal_process_tree(handle, signal.SIGTERM)
+        self._signal_process_tree(handle)
         if not await self._wait_for_process_tree(handle, grace_period):
-            self._signal_process_tree(handle, signal.SIGKILL)
+            self._signal_process_tree(handle, force=True)
             await self._wait_for_process_tree(handle, 5.0)
         await asyncio.to_thread(handle.popen.wait)
         await self._join_handle_threads(handle)
@@ -135,16 +136,36 @@ class ProcessManager:
             if thread is not None and thread.is_alive():
                 await asyncio.to_thread(thread.join, timeout)
 
-    def _signal_process_tree(self, handle: TrackedProcess, sig: signal.Signals) -> None:
+    def _signal_process_tree(self, handle: TrackedProcess, *, force: bool = False) -> None:
         try:
             if handle.process_group_id is not None:
+                sig = signal.SIGKILL if force else signal.SIGTERM
                 os.killpg(handle.process_group_id, sig)
-            elif sig == signal.SIGTERM:
-                handle.popen.terminate()
-            else:
+            elif force:
                 handle.popen.kill()
+            else:
+                handle.popen.terminate()
         except ProcessLookupError:
             return
+
+    def _process_tree_exists(self, handle: TrackedProcess) -> bool:
+        if handle.process_group_id is None:
+            return handle.popen.poll() is None
+        try:
+            os.killpg(handle.process_group_id, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # Darwin can return EPERM for a recently emptied group. Confirm
+            # membership instead of treating EPERM itself as an exit signal.
+            result = subprocess.run(
+                ["ps", "-axo", "pgid="],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return any(line.strip() == str(handle.process_group_id) for line in result.stdout.splitlines())
 
     async def _wait_for_process_tree(self, handle: TrackedProcess, timeout: float) -> bool:
         if handle.process_group_id is None:
@@ -156,9 +177,7 @@ class ProcessManager:
 
         deadline = asyncio.get_running_loop().time() + timeout
         while asyncio.get_running_loop().time() < deadline:
-            try:
-                os.killpg(handle.process_group_id, 0)
-            except (ProcessLookupError, PermissionError):
+            if not self._process_tree_exists(handle):
                 return True
             await asyncio.sleep(0.05)
         return False
@@ -202,6 +221,8 @@ class ProcessManager:
 
     def _wait_for_exit(self, handle: TrackedProcess, on_exit: ExitCallback | None) -> None:
         exit_code = handle.popen.wait()
+        while self._process_tree_exists(handle):
+            time.sleep(0.05)
         if handle.output_thread is not None:
             handle.output_thread.join(timeout=5.0)
         exited_at = utc_now()
@@ -245,6 +266,6 @@ class ProcessManager:
             await asyncio.sleep(timeout)
             handle = self.processes.get(pid)
             if handle and handle.info.status == ProcessStatus.RUNNING:
-                await self.stop_process(pid)
+                await self.stop_process(pid, grace_period=1.0)
         except asyncio.CancelledError:
             return
