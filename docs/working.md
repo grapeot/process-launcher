@@ -34,6 +34,12 @@ The launcher must be started from an interactive terminal session to act as a ma
 - Verify TCC permissions manually after deployment (unit tests cannot simulate the GUI ancestry chain).
 - If you need launchd scheduling with TCC access, wrap the job in a signed `.app` bundle with a stable bundle ID and the required entitlements, then have the bundle call the launcher API or launch a TCC-signed helper.
 
+## Process Lifecycle
+
+- Each launched command runs in its own process group on POSIX systems.
+- Stop and restart operations signal the entire group, allow 20 seconds for graceful cleanup, and only then escalate to `SIGKILL`.
+- This prevents shell wrappers or supervisors from exiting while their ffmpeg or worker descendants continue as orphans.
+
 ## Release Checklist
 
 - Search tracked public files for private paths, real emails, private domains, and secrets.

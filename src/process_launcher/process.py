@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ class TrackedProcess:
     popen: subprocess.Popen[str]
     info: ProcessInfo
     output_path: Path
+    process_group_id: int | None = None
     stop_requested: bool = False
     timeout_task: asyncio.Task[None] | None = None
     output_thread: threading.Thread | None = None
@@ -63,6 +65,7 @@ class ProcessManager:
             text=True,
             bufsize=1,
             shell=use_shell,
+            start_new_session=os.name == "posix",
         )
         pid = popen.pid
         info = ProcessInfo(
@@ -75,7 +78,12 @@ class ProcessManager:
             output_file=str(output_path),
             restart_count=restart_count,
         )
-        handle = TrackedProcess(popen=popen, info=info, output_path=output_path)
+        handle = TrackedProcess(
+            popen=popen,
+            info=info,
+            output_path=output_path,
+            process_group_id=pid if os.name == "posix" else None,
+        )
         with self._lock:
             self.processes[pid] = handle
 
@@ -101,22 +109,21 @@ class ProcessManager:
 
         return RunResponse(pid=pid, label=request.label, started_at=started_at, output_file=str(output_path))
 
-    async def stop_process(self, pid: int, *, grace_period: float = 1.0) -> ProcessInfo:
+    async def stop_process(self, pid: int, *, grace_period: float = 20.0) -> ProcessInfo:
         handle = self._get_handle(pid)
         if handle.info.status != ProcessStatus.RUNNING:
             return handle.info
 
         handle.stop_requested = True
-        handle.popen.terminate()
-        try:
-            await asyncio.to_thread(handle.popen.wait, grace_period)
-        except subprocess.TimeoutExpired:
-            handle.popen.kill()
-            await asyncio.to_thread(handle.popen.wait)
+        self._signal_process_tree(handle, signal.SIGTERM)
+        if not await self._wait_for_process_tree(handle, grace_period):
+            self._signal_process_tree(handle, signal.SIGKILL)
+            await self._wait_for_process_tree(handle, 5.0)
+        await asyncio.to_thread(handle.popen.wait)
         await self._join_handle_threads(handle)
         return handle.info
 
-    async def stop_all(self, *, grace_period: float = 1.0) -> None:
+    async def stop_all(self, *, grace_period: float = 20.0) -> None:
         running = [pid for pid, handle in self.processes.items() if handle.info.status == ProcessStatus.RUNNING]
         for pid in running:
             await self.stop_process(pid, grace_period=grace_period)
@@ -127,6 +134,34 @@ class ProcessManager:
         for thread in (handle.output_thread, handle.watcher_thread):
             if thread is not None and thread.is_alive():
                 await asyncio.to_thread(thread.join, timeout)
+
+    def _signal_process_tree(self, handle: TrackedProcess, sig: signal.Signals) -> None:
+        try:
+            if handle.process_group_id is not None:
+                os.killpg(handle.process_group_id, sig)
+            elif sig == signal.SIGTERM:
+                handle.popen.terminate()
+            else:
+                handle.popen.kill()
+        except ProcessLookupError:
+            return
+
+    async def _wait_for_process_tree(self, handle: TrackedProcess, timeout: float) -> bool:
+        if handle.process_group_id is None:
+            try:
+                await asyncio.to_thread(handle.popen.wait, timeout)
+            except subprocess.TimeoutExpired:
+                return False
+            return True
+
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                os.killpg(handle.process_group_id, 0)
+            except (ProcessLookupError, PermissionError):
+                return True
+            await asyncio.sleep(0.05)
+        return False
 
     def list_processes(self, *, running_only: bool = False) -> list[ProcessInfo]:
         items = [handle.info for handle in self.processes.values()]

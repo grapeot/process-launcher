@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import sys
 from pathlib import Path
 from typing import Any, cast
@@ -87,6 +88,45 @@ async def test_stop_process(process_manager: ProcessManager) -> None:
     response = await process_manager.start_process(RunRequest(command=[sys.executable, "-c", "import time; time.sleep(5)"]))
     await process_manager.stop_process(response.pid)
     await wait_for_status(process_manager, response.pid, ProcessStatus.KILLED)
+
+
+@pytest.mark.asyncio
+async def test_stop_process_terminates_and_waits_for_descendants(
+    process_manager: ProcessManager, tmp_path: Path
+) -> None:
+    child_ready = tmp_path / "child-ready"
+    child_stopped = tmp_path / "child-stopped"
+    child_code = (
+        "import pathlib, signal, sys, time; "
+        "ready=pathlib.Path(sys.argv[1]); stopped=pathlib.Path(sys.argv[2]); "
+        "signal.signal(signal.SIGTERM, lambda *_: (time.sleep(0.2), stopped.write_text('yes'), sys.exit(0))); "
+        "ready.write_text(str(__import__('os').getpid())); "
+        "time.sleep(30)"
+    )
+    parent_code = (
+        "import subprocess, sys, time; "
+        "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2], sys.argv[3]]); "
+        "time.sleep(30)"
+    )
+    response = await process_manager.start_process(
+        RunRequest(
+            command=[sys.executable, "-c", parent_code, child_code, str(child_ready), str(child_stopped)]
+        )
+    )
+
+    import asyncio
+
+    for _ in range(40):
+        if child_ready.exists():
+            break
+        await asyncio.sleep(0.05)
+    assert child_ready.exists()
+
+    await process_manager.stop_process(response.pid, grace_period=2.0)
+
+    assert child_stopped.read_text() == "yes"
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(child_ready.read_text()), signal.SIGCONT)
 
 
 @pytest.mark.asyncio
