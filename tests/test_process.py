@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 
@@ -90,6 +92,83 @@ async def test_stop_process(process_manager: ProcessManager) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process group behavior")
+async def test_stop_process_terminates_and_waits_for_descendants(
+    process_manager: ProcessManager, tmp_path: Path
+) -> None:
+    child_ready = tmp_path / "child-ready"
+    child_stopped = tmp_path / "child-stopped"
+    child_code = (
+        "import pathlib, signal, sys, time; "
+        "ready=pathlib.Path(sys.argv[1]); stopped=pathlib.Path(sys.argv[2]); "
+        "signal.signal(signal.SIGTERM, lambda *_: (time.sleep(0.2), stopped.write_text('yes'), sys.exit(0))); "
+        "ready.write_text(str(__import__('os').getpid())); "
+        "time.sleep(30)"
+    )
+    parent_code = (
+        "import subprocess, sys, time; "
+        "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2], sys.argv[3]]); "
+        "time.sleep(30)"
+    )
+    response = await process_manager.start_process(
+        RunRequest(
+            command=[sys.executable, "-c", parent_code, child_code, str(child_ready), str(child_stopped)]
+        )
+    )
+
+    import asyncio
+
+    for _ in range(40):
+        if child_ready.exists():
+            break
+        await asyncio.sleep(0.05)
+    assert child_ready.exists()
+
+    await process_manager.stop_process(response.pid, grace_period=2.0)
+
+    assert child_stopped.read_text() == "yes"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process group behavior")
+async def test_process_stays_running_until_descendants_exit(
+    process_manager: ProcessManager, tmp_path: Path
+) -> None:
+    child_ready = tmp_path / "detached-child-ready"
+    child_stopped = tmp_path / "detached-child-stopped"
+    child_code = (
+        "import pathlib, sys, time; "
+        "pathlib.Path(sys.argv[1]).write_text('yes'); "
+        "time.sleep(0.5); "
+        "pathlib.Path(sys.argv[2]).write_text('yes')"
+    )
+    parent_code = (
+        "import subprocess, sys; "
+        "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2], sys.argv[3]], "
+        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)"
+    )
+    response = await process_manager.start_process(
+        RunRequest(
+            command=[sys.executable, "-c", parent_code, child_code, str(child_ready), str(child_stopped)]
+        )
+    )
+
+    import asyncio
+
+    for _ in range(40):
+        if child_ready.exists():
+            break
+        await asyncio.sleep(0.05)
+    assert child_ready.exists()
+    process = process_manager.get_process(response.pid)
+    assert process is not None
+    assert process.status == ProcessStatus.RUNNING
+
+    await wait_for_status(process_manager, response.pid, ProcessStatus.EXITED)
+    assert child_stopped.read_text() == "yes"
+
+
+@pytest.mark.asyncio
 async def test_output_captured(process_manager: ProcessManager) -> None:
     response = await process_manager.start_process(RunRequest(command=[sys.executable, "-c", "print('hello')"], label="hello"))
     await wait_for_status(process_manager, response.pid, ProcessStatus.EXITED)
@@ -153,3 +232,52 @@ async def test_concurrent_processes(process_manager: ProcessManager) -> None:
     await wait_for_status(process_manager, first.pid, ProcessStatus.EXITED)
     await wait_for_status(process_manager, second.pid, ProcessStatus.EXITED)
     assert len(process_manager.list_processes()) == 2
+
+
+@pytest.mark.asyncio
+async def test_stop_all_stops_processes_concurrently(process_manager: ProcessManager) -> None:
+    import asyncio
+
+    first = await process_manager.start_process(
+        RunRequest(command=[sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, lambda *_: None); time.sleep(5)"])
+    )
+    second = await process_manager.start_process(
+        RunRequest(command=[sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, lambda *_: None); time.sleep(5)"])
+    )
+    await asyncio.sleep(0.1)
+    started = asyncio.get_running_loop().time()
+
+    await process_manager.stop_all(grace_period=0.3)
+
+    assert asyncio.get_running_loop().time() - started < 0.8
+    assert process_manager.get_process(first.pid).status == ProcessStatus.KILLED  # type: ignore[union-attr]
+    assert process_manager.get_process(second.pid).status == ProcessStatus.KILLED  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process group behavior")
+async def test_process_group_permission_fallback_is_conservative(process_manager: ProcessManager) -> None:
+    response = await process_manager.start_process(
+        RunRequest(command=[sys.executable, "-c", "import time; time.sleep(5)"])
+    )
+    handle = process_manager.processes[response.pid]
+
+    with patch("process_launcher.process.os.killpg", side_effect=PermissionError), patch(
+        "process_launcher.process.subprocess.run",
+        return_value=subprocess.CompletedProcess([], 0, stdout=""),
+    ):
+        assert process_manager._process_tree_exists(handle) is False
+
+    with patch("process_launcher.process.os.killpg", side_effect=PermissionError), patch(
+        "process_launcher.process.subprocess.run",
+        return_value=subprocess.CompletedProcess([], 1, stdout=""),
+    ):
+        assert process_manager._process_tree_exists(handle) is True
+
+    with patch("process_launcher.process.os.killpg", side_effect=PermissionError), patch(
+        "process_launcher.process.subprocess.run",
+        side_effect=subprocess.TimeoutExpired("ps", 0.5),
+    ):
+        assert process_manager._process_tree_exists(handle) is True
+
+    await process_manager.stop_all()
