@@ -176,6 +176,10 @@ Verification has two layers:
 
 Do not rely on `/logs/output?label=...` for targeted debugging unless the server version is known to support that filter. The reliable path is `/processes/{pid}` followed by `/processes/{pid}/output`.
 
+### Agentic Patrol via Delayed Scheduling
+
+For long-running tasks, an agent can inspect real progress, stop when its task-specific goal is met, or schedule **one** follow-up via `POST /run`. Unlike a fixed periodic job, each follow-up depends on the prior inspection. See [Agentic Patrol](./skill_agentic_patrol.md) for the reusable contract, an OpenCode reference implementation, and guidance for other CLI harnesses. This is best-effort: a successful scheduled command does not certify that the agent completed its inspection or scheduled another turn.
+
 ScheduledJob fields:
 
 | Field | Type | Notes |

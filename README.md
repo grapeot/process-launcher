@@ -97,7 +97,7 @@ Do not add it to crontab, launchd plists, PM2 ecosystem files, or any supervisor
 
 ## Private Overlay Pattern
 
-This repository is public-ready and generic. It ships a reusable skill in `skills/skill_process_launcher.md`, public docs, and fake configuration examples. A user workspace can keep a private overlay separately: aliases, real job recipes, private paths, domain-specific service labels, and operational runbooks. That overlay should point to this package but should not be committed here.
+This repository is public-ready and generic, shipping a routing guide in `skills/INDEX.md`, reusable skills in `skills/skill_process_launcher.md` and `skills/skill_agentic_patrol.md`, public docs, and fake configuration examples. A user workspace can keep a private overlay separately: aliases, real job recipes, private paths, domain-specific service labels, and operational runbooks. That overlay should point to this package but should not be committed here.
 
 ## Testing
 
