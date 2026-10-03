@@ -9,7 +9,8 @@ The server binds to `127.0.0.1` by default. It accepts arbitrary commands from l
 - `POST /run` starts one-off commands and returns a PID plus output log path.
 - `GET /processes` and `GET /processes/{pid}` report tracked process state.
 - `GET /processes/{pid}/output` reads captured stdout and stderr.
-- `delay_seconds` schedules a durable delayed launch that can be listed, cancelled, and recovered after restart.
+- `delay_seconds` schedules a durable delayed launch that can be listed, cancelled, and recovered after restart. The response includes `scheduled_job_id` for direct cancellation or audit.
+- Scheduling (or rescheduling) to a `run_at` that exactly collides with an existing pending/running job returns HTTP 409 with the conflicting job details; re-submit with `"confirm_conflict": true` when the overlap is intentional.
 - Scheduled jobs complete only when their child process exits with code `0`; failed child processes mark the scheduled job failed.
 - Dry-run the target command before scheduling when the CLI supports it. If no dry-run exists, make that risk explicit before creating a durable schedule.
 - Always-on services can be declared in YAML with restart delay, restart window, and circuit breaker limits.

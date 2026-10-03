@@ -26,7 +26,7 @@ from .models import (
 )
 from .periodic import PeriodicManager
 from .process import ProcessManager
-from .scheduled import ScheduledManager
+from .scheduled import ScheduleConflictError, ScheduledManager
 from .service_monitor import ServiceMonitor
 from .storage import SQLiteStore
 
@@ -61,6 +61,11 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
         if (request.delay_seconds and request.delay_seconds > 0) or request.run_at is not None:
             scheduled_at = datetime.now()
             run_at = request.run_at or scheduled_at + timedelta(seconds=request.delay_seconds or 0)
+            scheduled_manager: ScheduledManager = app.state.scheduled_manager
+            if not request.confirm_conflict:
+                conflicts = scheduled_manager.find_conflicts(run_at)
+                if conflicts:
+                    raise HTTPException(status_code=409, detail=_conflict_detail(conflicts))
             job = ScheduledJob(
                 label=request.label,
                 command=request.command,
@@ -71,7 +76,6 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
                 run_at=run_at,
                 misfire_policy=request.misfire_policy,
             )
-            scheduled_manager: ScheduledManager = app.state.scheduled_manager
             scheduled_manager.add(job)
             scheduled_manager.schedule(process_manager, job, request)
             return RunResponse(
@@ -79,6 +83,7 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
                 label=request.label,
                 started_at=scheduled_at,
                 output_file=None,
+                scheduled_job_id=job.id,
             )
         return await process_manager.start_process(request)
 
@@ -164,6 +169,8 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
             return scheduled_manager.update(process_manager, job_id, request)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="scheduled job not found") from exc
+        except ScheduleConflictError as exc:
+            raise HTTPException(status_code=409, detail=_conflict_detail(exc.conflicts)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -233,6 +240,27 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
         return {"status": "shutting_down"}
 
     return app
+
+
+def _conflict_detail(conflicts: list[ScheduledJob]) -> dict[str, Any]:
+    descriptions = []
+    for job in conflicts:
+        command = job.command if isinstance(job.command, str) else " ".join(job.command)
+        descriptions.append(
+            f'id={job.id}, label="{job.label}", command="{command}", '
+            f"status={job.status.value}, run_at={job.run_at.isoformat()}"
+        )
+    subject = f"There are {len(conflicts)} jobs" if len(conflicts) > 1 else "There is a job"
+    message = (
+        f"{subject} already scheduled at exactly the same time: {'; '.join(descriptions)}. "
+        'If this is intentional, re-submit with "confirm_conflict": true. '
+        "To replace a conflicting job, cancel it first: POST /scheduled/{id}/cancel."
+    )
+    return {
+        "error": "schedule_conflict",
+        "message": message,
+        "conflicts": [job.model_dump(mode="json") for job in conflicts],
+    }
 
 
 async def _terminate_self() -> None:

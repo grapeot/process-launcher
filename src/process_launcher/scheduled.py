@@ -19,6 +19,17 @@ def _to_naive_local(value: datetime) -> datetime:
     return value
 
 
+class ScheduleConflictError(Exception):
+    """Raised when a new or updated run_at exactly collides with a non-terminal job."""
+
+    def __init__(self, conflicts: list[ScheduledJob]) -> None:
+        self.conflicts = conflicts
+        super().__init__(
+            "scheduled job(s) already exist at exactly the same time: "
+            + ", ".join(job.id for job in conflicts)
+        )
+
+
 class ScheduledManager:
     """Tracker and recovery scheduler for durable one-shot scheduled jobs."""
 
@@ -32,6 +43,17 @@ class ScheduledManager:
     def add(self, job: ScheduledJob) -> None:
         self._jobs[job.id] = job
         self.store.upsert_scheduled_job(job)
+
+    def find_conflicts(self, run_at: datetime, *, exclude_job_id: str | None = None) -> list[ScheduledJob]:
+        target = _to_naive_local(run_at)
+        conflicts = [
+            job
+            for job in self._jobs.values()
+            if job.id != exclude_job_id
+            and job.status in (ScheduledStatus.PENDING, ScheduledStatus.RUNNING)
+            and _to_naive_local(job.run_at) == target
+        ]
+        return sorted(conflicts, key=lambda job: job.scheduled_at)
 
     def set_task(self, job_id: str, task: asyncio.Task[None]) -> None:
         self._tasks[job_id] = task
@@ -83,11 +105,20 @@ class ScheduledManager:
         if job.status != ScheduledStatus.PENDING:
             raise ValueError(f"Cannot update job in status {job.status.value}")
 
+        if (
+            request.run_at is not None
+            and not request.confirm_conflict
+            and _to_naive_local(request.run_at) != _to_naive_local(job.run_at)
+        ):
+            conflicts = self.find_conflicts(request.run_at, exclude_job_id=job_id)
+            if conflicts:
+                raise ScheduleConflictError(conflicts)
+
         task = self._tasks.pop(job_id, None)
         if task and not task.done():
             task.cancel()
 
-        updates = request.model_dump(exclude_unset=True, exclude_none=True)
+        updates = request.model_dump(exclude_unset=True, exclude_none=True, exclude={"confirm_conflict"})
         updated_job = job.model_copy(update=updates)
         self._update_job(updated_job)
         self.schedule(process_manager, updated_job, self._request_from_job(updated_job))
