@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 
@@ -676,3 +676,202 @@ async def test_list_scheduled_limit(client: httpx.AsyncClient) -> None:
 
     scheduled = await client.get("/scheduled?limit=2")
     assert len(scheduled.json()) == 2
+
+
+def _fixed_future_run_at(offset_seconds: int = 60) -> str:
+    return (datetime.now() + timedelta(seconds=offset_seconds)).replace(microsecond=0).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_scheduled_run_response_includes_job_id(client: httpx.AsyncClient) -> None:
+    response = await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('later')"], "label": "job_id_echo", "delay_seconds": 60},
+    )
+    assert response.status_code == 200
+    job_id = response.json()["scheduled_job_id"]
+    assert job_id
+
+    scheduled = await client.get("/scheduled")
+    assert [job["id"] for job in scheduled.json()] == [job_id]
+
+
+@pytest.mark.asyncio
+async def test_schedule_conflict_same_run_at_returns_409(client: httpx.AsyncClient) -> None:
+    run_at = _fixed_future_run_at()
+    first = await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('first')"], "label": "conflict_first", "run_at": run_at},
+    )
+    assert first.status_code == 200
+
+    second = await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('second')"], "label": "conflict_second", "run_at": run_at},
+    )
+    assert second.status_code == 409
+    detail = second.json()["detail"]
+    assert detail["error"] == "schedule_conflict"
+    assert "conflict_first" in detail["message"]
+    assert first.json()["scheduled_job_id"] in detail["message"]
+    assert [job["id"] for job in detail["conflicts"]] == [first.json()["scheduled_job_id"]]
+
+    scheduled = await client.get("/scheduled")
+    assert [job["label"] for job in scheduled.json()] == ["conflict_first"]
+
+
+@pytest.mark.asyncio
+async def test_schedule_conflict_confirmed_creates_second_job(client: httpx.AsyncClient) -> None:
+    run_at = _fixed_future_run_at()
+    first = await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('first')"], "label": "confirm_first", "run_at": run_at},
+    )
+    second = await client.post(
+        "/run",
+        json={
+            "command": [sys.executable, "-c", "print('second')"],
+            "label": "confirm_second",
+            "run_at": run_at,
+            "confirm_conflict": True,
+        },
+    )
+    assert second.status_code == 200
+    assert second.json()["scheduled_job_id"] != first.json()["scheduled_job_id"]
+
+    scheduled = await client.get("/scheduled")
+    assert sorted(job["label"] for job in scheduled.json()) == ["confirm_first", "confirm_second"]
+
+
+@pytest.mark.asyncio
+async def test_schedule_conflict_not_triggered_for_different_run_at(client: httpx.AsyncClient) -> None:
+    first = await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('a')"], "label": "time_a", "run_at": _fixed_future_run_at(60)},
+    )
+    second = await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('b')"], "label": "time_b", "run_at": _fixed_future_run_at(90)},
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_schedule_conflict_ignores_terminal_jobs(client: httpx.AsyncClient) -> None:
+    run_at = (datetime.now() + timedelta(seconds=0.1)).replace(microsecond=0)
+    first = await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('quick')"], "label": "terminal_first", "run_at": run_at.isoformat()},
+    )
+    assert first.status_code == 200
+    job_id = first.json()["scheduled_job_id"]
+    deadline = asyncio.get_running_loop().time() + 3.0
+    while asyncio.get_running_loop().time() < deadline:
+        scheduled = await client.get("/scheduled?include_terminated=true")
+        job = [item for item in scheduled.json() if item["id"] == job_id][0]
+        if job["status"] == "completed":
+            break
+        await asyncio.sleep(0.05)
+    else:
+        raise AssertionError("terminal_first did not complete")
+
+    second = await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('again')"], "label": "terminal_second", "run_at": run_at.isoformat()},
+    )
+    assert second.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_update_scheduled_run_at_conflict_returns_409(client: httpx.AsyncClient) -> None:
+    target_run_at = _fixed_future_run_at(90)
+    await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('target')"], "label": "patch_target", "run_at": target_run_at},
+    )
+    mover = await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('mover')"], "label": "patch_mover", "delay_seconds": 60},
+    )
+    mover_id = mover.json()["scheduled_job_id"]
+
+    update = await client.patch(f"/scheduled/{mover_id}", json={"run_at": target_run_at})
+    assert update.status_code == 409
+    detail = update.json()["detail"]
+    assert detail["error"] == "schedule_conflict"
+
+    confirmed = await client.patch(
+        f"/scheduled/{mover_id}",
+        json={"run_at": target_run_at, "confirm_conflict": True},
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["run_at"].startswith(target_run_at)
+
+
+@pytest.mark.asyncio
+async def test_update_scheduled_same_run_at_is_not_conflict(client: httpx.AsyncClient) -> None:
+    run_at = _fixed_future_run_at()
+    first = await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('keep')"], "label": "same_time_keep", "run_at": run_at},
+    )
+    update = await client.patch(
+        f"/scheduled/{first.json()['scheduled_job_id']}",
+        json={"run_at": run_at},
+    )
+    assert update.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_schedule_conflict_matches_running_job(client: httpx.AsyncClient) -> None:
+    run_at = (datetime.now() + timedelta(seconds=0.1)).replace(microsecond=0)
+    first = await client.post(
+        "/run",
+        json={
+            "command": [sys.executable, "-c", "import time; time.sleep(5)"],
+            "label": "running_first",
+            "run_at": run_at.isoformat(),
+        },
+    )
+    assert first.status_code == 200
+    job_id = first.json()["scheduled_job_id"]
+
+    deadline = asyncio.get_running_loop().time() + 3.0
+    while asyncio.get_running_loop().time() < deadline:
+        running = await client.get("/scheduled?status=running")
+        if any(job["id"] == job_id for job in running.json()):
+            break
+        await asyncio.sleep(0.05)
+    else:
+        raise AssertionError("running_first did not enter running status")
+
+    second = await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('second')"], "label": "running_second", "run_at": run_at.isoformat()},
+    )
+    assert second.status_code == 409
+    assert [job["id"] for job in second.json()["detail"]["conflicts"]] == [job_id]
+
+
+@pytest.mark.asyncio
+async def test_schedule_conflict_normalizes_timezones(client: httpx.AsyncClient) -> None:
+    aware = (datetime.now(timezone.utc) + timedelta(seconds=60)).replace(microsecond=0)
+    naive_local_equivalent = aware.astimezone().replace(tzinfo=None)
+
+    first = await client.post(
+        "/run",
+        json={"command": [sys.executable, "-c", "print('aware')"], "label": "tz_aware_first", "run_at": aware.isoformat()},
+    )
+    assert first.status_code == 200
+
+    second = await client.post(
+        "/run",
+        json={
+            "command": [sys.executable, "-c", "print('naive')"],
+            "label": "tz_naive_second",
+            "run_at": naive_local_equivalent.isoformat(),
+        },
+    )
+    assert second.status_code == 409
+    assert [job["id"] for job in second.json()["detail"]["conflicts"]] == [first.json()["scheduled_job_id"]]

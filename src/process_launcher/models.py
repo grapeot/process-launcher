@@ -40,6 +40,10 @@ class RunRequest(BaseModel):
     delay_seconds: float | None = Field(default=None, ge=0, description="Delay execution by N seconds. Persisted across restarts.")
     run_at: datetime | None = Field(default=None, description="Absolute time to run the command.")
     misfire_policy: "MisfirePolicy" = Field(default="run_immediately")
+    confirm_conflict: bool = Field(
+        default=False,
+        description="Set true to schedule alongside pending jobs that start at exactly the same time. Without it, an exact run_at collision returns 409.",
+    )
 
     @model_validator(mode="after")
     def validate_schedule(self) -> Self:
@@ -53,6 +57,7 @@ class RunResponse(BaseModel):
     label: str | None = None
     started_at: datetime
     output_file: str | None = None
+    scheduled_job_id: str | None = Field(default=None, description="Durable scheduled job id when the run is delayed; None for immediate launches.")
 
 
 class ScheduledUpdateRequest(BaseModel):
@@ -62,6 +67,10 @@ class ScheduledUpdateRequest(BaseModel):
     label: str | None = None
     timeout: float | None = Field(default=None, gt=0)
     misfire_policy: "MisfirePolicy | None" = None
+    confirm_conflict: bool = Field(
+        default=False,
+        description="Set true to move run_at alongside pending jobs that start at exactly the same time. Without it, an exact run_at collision returns 409.",
+    )
 
     @model_validator(mode="after")
     def validate_update(self) -> Self:

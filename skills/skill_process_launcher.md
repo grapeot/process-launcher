@@ -84,6 +84,7 @@ RunRequest fields:
 | delay_seconds | float | | Delay before launch, persisted to SQLite and recovered after restart. |
 | run_at | datetime | | Absolute launch time; mutually exclusive with `delay_seconds`. |
 | misfire_policy | string | | Recovery when `run_at` passed while the launcher was down: `run_immediately` / `skip` / `fail`. |
+| confirm_conflict | bool | | Default `false`. Set `true` to schedule alongside jobs already pending at exactly the same `run_at`. |
 
 List processes and read output:
 
@@ -147,7 +148,9 @@ curl -sf -X POST http://127.0.0.1:7997/scheduled/{job_id}/cancel
 
 Scheduled jobs are persisted in SQLite and recovered on launcher restart. Pending jobs can be updated with `PATCH /scheduled/{job_id}`; the launcher replaces the old in-memory delay task and keeps the same job id. Running, completed, failed, cancelled, or missed jobs cannot be updated. If `run_at` passed while the launcher was down, `misfire_policy` controls recovery: `run_immediately`, `skip`, or `fail`. A scheduled job becomes `completed` only after its child process exits with code `0`; non-zero exits become `failed`. Note the recovery boundary across restarts: scheduled jobs are persisted and restored, regular process handles live only in memory (so `/processes` starts fresh after a restart), and always-on services restart from the YAML declaration.
 
-When `POST /run` creates a delayed job, the immediate response may show `pid: 0` and `output_file: null` because no child process has started yet. Treat that as a scheduled handoff, not as a process launch. Call `GET /scheduled` and match by label, command, and `run_at` to get the durable job id for later cancellation or audit.
+Exact-time collision guard: when a scheduled `POST /run` (via `delay_seconds` or `run_at`) resolves to a `run_at` exactly equal to an existing pending or running job, the request returns HTTP 409 with `detail.error = "schedule_conflict"`, a message naming each conflicting job (id, label, command, status, run_at), and the full conflicting jobs in `detail.conflicts`. Nothing is created on 409. If the overlap is intentional, re-submit the same request with `"confirm_conflict": true`. To replace a conflicting job instead, cancel it first with `POST /scheduled/{id}/cancel`. `PATCH /scheduled/{job_id}` applies the same guard when moving `run_at` onto a conflicting time (same `confirm_conflict` escape hatch). The guard matches exact times only; two jobs submitted seconds apart with similar delays will not collide.
+
+When `POST /run` creates a delayed job, the immediate response may show `pid: 0` and `output_file: null` because no child process has started yet. Treat that as a scheduled handoff, not as a process launch. The response's `scheduled_job_id` is the durable job id to use for later cancellation or audit.
 
 ### OpenCode Same-Session Reminders
 
