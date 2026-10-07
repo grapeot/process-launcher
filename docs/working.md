@@ -48,3 +48,15 @@ The launcher must be started from an interactive terminal session to act as a ma
 - Run the package entrypoint smoke check.
 - Confirm `config/launcher.yaml`, `.env`, and `logs/` are ignored.
 - Confirm docs describe the private overlay pattern rather than embedding private recipes.
+
+## Troubleshooting Notes
+
+### macOS Local Network Privacy and Process Lifecycles
+
+A surviving launcher or multiplexer can remain running while LAN-dependent workers stop making progress after the hosting terminal exits. Reattaching a new terminal client to an old multiplexer does not recreate its launch context.
+
+- Compare the same interpreter and target in the existing shell, through `/run`, and in a fresh terminal. Curl success is a clue; `NWConnection` reporting `localNetworkDenied` supplies explicit policy evidence.
+- System curl's process identity can differ from Python's. Loading libcurl in-process is not equivalent to spawning `/usr/bin/curl`, and other curl builds are not guaranteed to behave identically.
+- Recovery belongs to a human operator in a freshly verified context. Review active jobs before restarting the launcher, and verify application output rather than process liveness alone.
+
+See [macOS Local Network troubleshooting](macos_local_network_troubleshooting.md) for the generalized observations, public-source mechanism analysis, read-only probe, and recovery guidance.
