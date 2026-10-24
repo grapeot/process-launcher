@@ -14,6 +14,7 @@ def test_storage_creates_schema_and_migration_record(tmp_path: Path) -> None:
         assert [(row["version"], row["name"]) for row in rows] == [
             (1, "create_scheduled_jobs"),
             (2, "create_periodic_runs"),
+            (3, "add_diagnosis_policy"),
         ]
     finally:
         store.close()

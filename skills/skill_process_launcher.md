@@ -81,6 +81,7 @@ RunRequest fields:
 | env | object | | Extra environment variables. |
 | label | string | | Label used to identify the process (affects log file names). |
 | timeout | float | | Seconds before the child is killed. |
+| diagnose_on_failure | bool | | Defaults to `true`. Set `false` for experimental runs to opt out of downstream automatic diagnosis. |
 | delay_seconds | float | | Delay before launch, persisted to SQLite and recovered after restart. |
 | run_at | datetime | | Absolute launch time; mutually exclusive with `delay_seconds`. |
 | misfire_policy | string | | Recovery when `run_at` passed while the launcher was down: `run_immediately` / `skip` / `fail`. |
@@ -151,6 +152,22 @@ Scheduled jobs are persisted in SQLite and recovered on launcher restart. Pendin
 Exact-time collision guard: when a scheduled `POST /run` (via `delay_seconds` or `run_at`) resolves to a `run_at` exactly equal to an existing pending or running job, the request returns HTTP 409 with `detail.error = "schedule_conflict"`, a message naming each conflicting job (id, label, command, status, run_at), and the full conflicting jobs in `detail.conflicts`. Nothing is created on 409. If the overlap is intentional, re-submit the same request with `"confirm_conflict": true`. To replace a conflicting job instead, cancel it first with `POST /scheduled/{id}/cancel`. `PATCH /scheduled/{job_id}` applies the same guard when moving `run_at` onto a conflicting time (same `confirm_conflict` escape hatch). The guard matches exact times only; two jobs submitted seconds apart with similar delays will not collide.
 
 When `POST /run` creates a delayed job, the immediate response may show `pid: 0` and `output_file: null` because no child process has started yet. Treat that as a scheduled handoff, not as a process launch. The response's `scheduled_job_id` is the durable job id to use for later cancellation or audit.
+
+### Opting Out of Automatic Failure Diagnosis (`diagnose_on_failure`)
+
+`diagnose_on_failure` is a boolean policy flag that defaults to `true` for backward compatibility. When running experimental probes, dry-run checks, or commands expected to fail, pass `"diagnose_on_failure": false` so downstream diagnostic consumers skip automatic failure triage:
+
+```json
+{
+  "command": ["python", "experiment.py", "--try-candidate"],
+  "label": "candidate-check",
+  "diagnose_on_failure": false
+}
+```
+
+- **Where it can be set:** `POST /run` for immediate or delayed launches, `PATCH /scheduled/{job_id}` for pending jobs (including a patch with only this field), and `periodic_jobs.<label>.diagnose_on_failure` in YAML. `POST /periodic/reload` updates future runs without mutating a run already in flight.
+- **Where it appears:** `RunResponse`, `ProcessInfo`, start/exit heartbeat events, durable `ScheduledJob` records, and per-run `PeriodicRun` snapshots. SQLite schema v3 backfills historical rows as `true` and preserves `false` across restarts.
+- **Contract:** `diagnose_on_failure: false` never masks a non-zero exit code as success and does not suppress captured stdout/stderr logs, timeouts, internal exit callbacks, or scheduled/periodic status updates. The launcher publishes the policy; external diagnostic consumers must honor explicit `false` and treat omitted fields as enabled (`true`).
 
 ### OpenCode Same-Session Reminders
 

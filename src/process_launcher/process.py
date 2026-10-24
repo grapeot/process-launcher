@@ -79,6 +79,7 @@ class ProcessManager:
             started_at=started_at,
             output_file=str(output_path),
             restart_count=restart_count,
+            diagnose_on_failure=request.diagnose_on_failure,
         )
         handle = TrackedProcess(
             popen=popen,
@@ -97,6 +98,7 @@ class ProcessManager:
             cwd=request.cwd,
             output_file=str(output_path),
             restart_count=restart_count,
+            diagnose_on_failure=request.diagnose_on_failure,
         )
 
         output_thread = threading.Thread(target=self._stream_output, args=(handle,), daemon=True)
@@ -109,7 +111,8 @@ class ProcessManager:
         if request.timeout:
             handle.timeout_task = asyncio.create_task(self._enforce_timeout(pid, request.timeout))
 
-        return RunResponse(pid=pid, label=request.label, started_at=started_at, output_file=str(output_path))
+        return RunResponse(pid=pid, label=request.label, started_at=started_at, output_file=str(output_path),
+                           diagnose_on_failure=request.diagnose_on_failure)
 
     async def stop_process(self, pid: int, *, grace_period: float = 20.0) -> ProcessInfo:
         handle = self._get_handle(pid)
@@ -268,6 +271,7 @@ class ProcessManager:
             output_file=handle.info.output_file,
             status=status.value,
             exited_at=to_iso8601(exited_at),
+            diagnose_on_failure=handle.info.diagnose_on_failure,
         )
 
         if handle.timeout_task is not None:

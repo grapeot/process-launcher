@@ -1,5 +1,9 @@
 # Working Notes
 
+## Changelog
+
+- 2026-10-24: Added `diagnose_on_failure` (boolean, default `true`) across immediate and delayed `POST /run`, pending `PATCH /scheduled/{id}` (including single-field patches), and YAML `periodic_jobs` declarations. The policy propagates to responses, process metadata, start/exit heartbeat events, and SQLite schema v3 scheduled jobs and periodic run snapshots. Historical rows default to `true`; recovery preserves opt-outs and reload preserves in-flight snapshots. `false` leaves failure status, logs, timeouts, callbacks, and scheduling intact while signaling external diagnostic consumers to skip automatic diagnosis (missing fields mean `true`).
+
 ## Repository Contract
 
 Tracked files should be safe for public release. Runtime files are local-only:

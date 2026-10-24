@@ -9,7 +9,7 @@ from typing import Any
 from .models import MisfirePolicy, PeriodicRun, PeriodicRunStatus, ScheduledJob, ScheduledStatus
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class SQLiteStore:
@@ -100,6 +100,18 @@ class SQLiteStore:
             )
             self._conn.commit()
 
+        if 3 not in applied:
+            # sqlite3 does not implicitly start a transaction for DDL.
+            with self._conn:
+                self._conn.execute("BEGIN IMMEDIATE")
+                if self._conn.execute("SELECT 1 FROM schema_migrations WHERE version=3").fetchone() is None:
+                    for table in ("scheduled_jobs", "periodic_runs"):
+                        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN diagnose_on_failure INTEGER NOT NULL DEFAULT 1")
+                    self._conn.execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                        (3, "add_diagnosis_policy", _serialize_datetime(datetime.now())),
+                    )
+
     def upsert_scheduled_job(self, job: ScheduledJob) -> None:
         now = _serialize_datetime(datetime.now())
         self._conn.execute(
@@ -107,8 +119,8 @@ class SQLiteStore:
             INSERT INTO scheduled_jobs(
                 id, label, command_json, cwd, env_json, timeout, scheduled_at, run_at,
                 status, misfire_policy, result_pid, last_error, started_at, completed_at,
-                cancelled_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                cancelled_at, created_at, updated_at, diagnose_on_failure
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 label = excluded.label,
                 command_json = excluded.command_json,
@@ -124,7 +136,8 @@ class SQLiteStore:
                 started_at = excluded.started_at,
                 completed_at = excluded.completed_at,
                 cancelled_at = excluded.cancelled_at,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                diagnose_on_failure = excluded.diagnose_on_failure
             """,
             _job_values(job, created_at=now, updated_at=now),
         )
@@ -169,8 +182,8 @@ class SQLiteStore:
             INSERT INTO periodic_runs(
                 id, label, command_json, cwd, env_json, timeout, scheduled_for, status,
                 trigger, result_pid, output_file, last_error, started_at, completed_at,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, updated_at, diagnose_on_failure
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 label = excluded.label,
                 command_json = excluded.command_json,
@@ -185,7 +198,8 @@ class SQLiteStore:
                 last_error = excluded.last_error,
                 started_at = excluded.started_at,
                 completed_at = excluded.completed_at,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                diagnose_on_failure = excluded.diagnose_on_failure
             """,
             _periodic_run_values(run, created_at=now, updated_at=now),
         )
@@ -250,6 +264,7 @@ def _job_values(job: ScheduledJob, *, created_at: str, updated_at: str) -> tuple
         _serialize_optional_datetime(job.cancelled_at),
         created_at,
         updated_at,
+        int(job.diagnose_on_failure),
     )
 
 
@@ -270,6 +285,7 @@ def _row_to_job(row: sqlite3.Row) -> ScheduledJob:
         started_at=_parse_optional_datetime(row["started_at"]),
         completed_at=_parse_optional_datetime(row["completed_at"]),
         cancelled_at=_parse_optional_datetime(row["cancelled_at"]),
+        diagnose_on_failure=bool(row["diagnose_on_failure"]),
     )
 
 
@@ -291,6 +307,7 @@ def _periodic_run_values(run: PeriodicRun, *, created_at: str, updated_at: str) 
         _serialize_optional_datetime(run.completed_at),
         created_at,
         updated_at,
+        int(run.diagnose_on_failure),
     )
 
 
@@ -310,6 +327,7 @@ def _row_to_periodic_run(row: sqlite3.Row) -> PeriodicRun:
         last_error=row["last_error"],
         started_at=_parse_optional_datetime(row["started_at"]),
         completed_at=_parse_optional_datetime(row["completed_at"]),
+        diagnose_on_failure=bool(row["diagnose_on_failure"]),
     )
 
 

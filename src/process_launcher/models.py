@@ -27,6 +27,7 @@ class ProcessInfo(BaseModel):
     exited_at: datetime | None = None
     output_file: str | None = None
     restart_count: int = 0
+    diagnose_on_failure: bool = True
 
 
 class RunRequest(BaseModel):
@@ -37,6 +38,7 @@ class RunRequest(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     label: str | None = None
     timeout: float | None = Field(default=None, gt=0)
+    diagnose_on_failure: bool = Field(default=True, description="Allow failure consumers to submit automatic diagnosis. False preserves failure status and logs but opts out of diagnosis.")
     delay_seconds: float | None = Field(default=None, ge=0, description="Delay execution by N seconds. Persisted across restarts.")
     run_at: datetime | None = Field(default=None, description="Absolute time to run the command.")
     misfire_policy: "MisfirePolicy" = Field(default="run_immediately")
@@ -57,6 +59,7 @@ class RunResponse(BaseModel):
     label: str | None = None
     started_at: datetime
     output_file: str | None = None
+    diagnose_on_failure: bool = True
     scheduled_job_id: str | None = Field(default=None, description="Durable scheduled job id when the run is delayed; None for immediate launches.")
 
 
@@ -67,6 +70,7 @@ class ScheduledUpdateRequest(BaseModel):
     label: str | None = None
     timeout: float | None = Field(default=None, gt=0)
     misfire_policy: "MisfirePolicy | None" = None
+    diagnose_on_failure: bool | None = None
     confirm_conflict: bool = Field(
         default=False,
         description="Set true to move run_at alongside pending jobs that start at exactly the same time. Without it, an exact run_at collision returns 409.",
@@ -74,7 +78,8 @@ class ScheduledUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_update(self) -> Self:
-        if self.run_at is None and self.label is None and self.timeout is None and self.misfire_policy is None:
+        if (self.run_at is None and self.label is None and self.timeout is None
+                and self.misfire_policy is None and self.diagnose_on_failure is None):
             raise ValueError("at least one scheduled job field must be provided")
         return self
 
@@ -170,6 +175,7 @@ class PeriodicJobConfig(BaseModel):
     env_file: str | None = None
     timeout: float | None = Field(default=None, gt=0)
     enabled: bool = True
+    diagnose_on_failure: bool = True
     schedule: PeriodicSchedule
     overlap_policy: PeriodicOverlapPolicy = PeriodicOverlapPolicy.SKIP
     misfire_policy: MisfirePolicy = MisfirePolicy.SKIP
@@ -224,6 +230,7 @@ class PeriodicRun(BaseModel):
     cwd: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
     timeout: float | None = None
+    diagnose_on_failure: bool = True
     scheduled_for: datetime
     status: PeriodicRunStatus = PeriodicRunStatus.PENDING
     trigger: str = "schedule"
@@ -262,6 +269,7 @@ class ScheduledJob(BaseModel):
     cwd: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
     timeout: float | None = None
+    diagnose_on_failure: bool = True
     scheduled_at: datetime
     run_at: datetime
     status: ScheduledStatus = ScheduledStatus.PENDING
