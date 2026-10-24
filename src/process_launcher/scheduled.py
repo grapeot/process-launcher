@@ -171,6 +171,7 @@ class ScheduledManager:
             env=job.env,
             label=job.label,
             timeout=job.timeout,
+            diagnose_on_failure=job.diagnose_on_failure,
             misfire_policy=job.misfire_policy,
         )
 

@@ -135,6 +135,7 @@ class PeriodicManager:
                 cwd=job.cwd,
                 env=job.env,
                 timeout=job.timeout,
+                diagnose_on_failure=job.diagnose_on_failure,
                 scheduled_for=scheduled_for,
                 status=PeriodicRunStatus.SKIPPED,
                 last_error="previous periodic run is still active",
@@ -149,13 +150,15 @@ class PeriodicManager:
             cwd=job.cwd,
             env=job.env,
             timeout=job.timeout,
+            diagnose_on_failure=job.diagnose_on_failure,
             scheduled_for=scheduled_for,
             status=PeriodicRunStatus.RUNNING,
             started_at=datetime.now(),
         )
         self._active_runs[job.label] = run
         self.store.upsert_periodic_run(run)
-        request = RunRequest(command=job.command, cwd=job.cwd, env=job.env, label=job.label, timeout=job.timeout)
+        request = RunRequest(command=job.command, cwd=job.cwd, env=job.env, label=job.label, timeout=job.timeout,
+                             diagnose_on_failure=run.diagnose_on_failure)
         try:
             response = await process_manager.start_process(
                 request,

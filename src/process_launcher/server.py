@@ -72,6 +72,7 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
                 cwd=request.cwd,
                 env=request.env,
                 timeout=request.timeout,
+                diagnose_on_failure=request.diagnose_on_failure,
                 scheduled_at=scheduled_at,
                 run_at=run_at,
                 misfire_policy=request.misfire_policy,
@@ -84,6 +85,7 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
                 started_at=scheduled_at,
                 output_file=None,
                 scheduled_job_id=job.id,
+                diagnose_on_failure=request.diagnose_on_failure,
             )
         return await process_manager.start_process(request)
 
