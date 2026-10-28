@@ -2,6 +2,8 @@
 
 ## Changelog
 
+- 2026-10-28: Documentation-only amendment requiring explicit diagnosis opt-outs for temporary dev/preview servers, local visual iteration, one-off QA, probes, and expected failures. Added live-schema preflight, a prohibition on dropping rejected policy fields, metadata readback, and safe fallback/blocker guidance. Read-only inspection found a legacy live API without the policy field or a running-process mutation endpoint; no runtime policy changed.
+  - Validation: offline suite (`python -m pytest -q -m 'not live_integration'`) passed with 123 tests and 9 deselected; module entrypoint help passed. A fresh independent reviewer checked the diff against API, scheduling, periodic, and process lifecycle source and returned PASS with no blocking findings.
 - 2026-10-24: Added `diagnose_on_failure` (boolean, default `true`) across immediate and delayed `POST /run`, pending `PATCH /scheduled/{id}` (including single-field patches), and YAML `periodic_jobs` declarations. The policy propagates to responses, process metadata, start/exit heartbeat events, and SQLite schema v3 scheduled jobs and periodic run snapshots. Historical rows default to `true`; recovery preserves opt-outs and reload preserves in-flight snapshots. `false` leaves failure status, logs, timeouts, callbacks, and scheduling intact while signaling external diagnostic consumers to skip automatic diagnosis (missing fields mean `true`).
 
 ## Repository Contract
@@ -54,6 +56,10 @@ The launcher must be started from an interactive terminal session to act as a ma
 - Confirm docs describe the private overlay pattern rather than embedding private recipes.
 
 ## Troubleshooting Notes
+
+### Checkout Features May Not Be Live
+
+A long-lived launcher can serve an older request schema even after the checkout gains a new field. Inspect live `GET /openapi.json` before relying on `diagnose_on_failure: false`; a missing or rejected field is a blocker, not permission to retry without it. Pending-job patches and periodic reloads cannot change the policy of an already running process. Record the unresolved opt-out and preserve a still-needed process until a safe alternative is available.
 
 ### macOS Local Network Privacy and Process Lifecycles
 
