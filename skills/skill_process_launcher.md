@@ -81,7 +81,7 @@ RunRequest fields:
 | env | object | | Extra environment variables. |
 | label | string | | Label used to identify the process (affects log file names). |
 | timeout | float | | Seconds before the child is killed. |
-| diagnose_on_failure | bool | | Defaults to `true`. Set `false` for experimental runs to opt out of downstream automatic diagnosis. |
+| diagnose_on_failure | bool | | Defaults to `true`. Explicitly set `false` for temporary dev/preview servers, local visual iteration, one-off QA, experimental probes, dry-run checks, and commands expected to fail. |
 | delay_seconds | float | | Delay before launch, persisted to SQLite and recovered after restart. |
 | run_at | datetime | | Absolute launch time; mutually exclusive with `delay_seconds`. |
 | misfire_policy | string | | Recovery when `run_at` passed while the launcher was down: `run_immediately` / `skip` / `fail`. |
@@ -155,7 +155,7 @@ When `POST /run` creates a delayed job, the immediate response may show `pid: 0`
 
 ### Opting Out of Automatic Failure Diagnosis (`diagnose_on_failure`)
 
-`diagnose_on_failure` is a boolean policy flag that defaults to `true` for backward compatibility. When running experimental probes, dry-run checks, or commands expected to fail, pass `"diagnose_on_failure": false` so downstream diagnostic consumers skip automatic failure triage:
+`diagnose_on_failure` is a boolean policy flag that defaults to `true` for backward compatibility. Explicitly pass `"diagnose_on_failure": false` for temporary dev/preview servers, local visual iteration, one-off QA, experimental probes, dry-run checks, and commands expected to fail. External diagnostic consumers must honor `false` and skip automatic failure triage:
 
 ```json
 {
@@ -164,6 +164,12 @@ When `POST /run` creates a delayed job, the immediate response may show `pid: 0`
   "diagnose_on_failure": false
 }
 ```
+
+Before submitting, inspect the running service's `GET /openapi.json` for support in the relevant request schema; checkout source is not evidence of live support. If the field is absent or rejected with `422` / `extra_forbidden`, never drop it and retry with the default `true`. Use only an alternative execution path confirmed to be outside automatic failure diagnosis, or report a blocker requiring an authorized service upgrade. Do not unilaterally restart a shared launcher or edit real configuration.
+
+Read back process/run metadata to verify explicit `false`: use `GET /processes/{pid}` after launch, `GET /scheduled` for a pending delayed job, or the periodic run endpoint for a periodic run. Omission means diagnosis is enabled, not proof of opt-out. Running jobs cannot be patched: scheduled patches affect pending jobs only, and periodic reloads affect future runs only. For a job already running under a legacy API, record the opt-out as unverified / diagnosis enabled and report the blocker; preserve the job if still needed until a safe alternative exists.
+
+Never change exit codes, suppress logs, or wrap failure as success to bypass diagnosis.
 
 - **Where it can be set:** `POST /run` for immediate or delayed launches, `PATCH /scheduled/{job_id}` for pending jobs (including a patch with only this field), and `periodic_jobs.<label>.diagnose_on_failure` in YAML. `POST /periodic/reload` updates future runs without mutating a run already in flight.
 - **Where it appears:** `RunResponse`, `ProcessInfo`, start/exit heartbeat events, durable `ScheduledJob` records, and per-run `PeriodicRun` snapshots. SQLite schema v3 backfills historical rows as `true` and preserves `false` across restarts.
