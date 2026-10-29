@@ -171,8 +171,8 @@ Read back process/run metadata to verify explicit `false`: use `GET /processes/{
 
 Never change exit codes, suppress logs, or wrap failure as success to bypass diagnosis.
 
-- **Where it can be set:** `POST /run` for immediate or delayed launches, `PATCH /scheduled/{job_id}` for pending jobs (including a patch with only this field), and `periodic_jobs.<label>.diagnose_on_failure` in YAML. `POST /periodic/reload` updates future runs without mutating a run already in flight.
-- **Where it appears:** `RunResponse`, `ProcessInfo`, start/exit heartbeat events, durable `ScheduledJob` records, and per-run `PeriodicRun` snapshots. SQLite schema v3 backfills historical rows as `true` and preserves `false` across restarts.
+- **Where it can be set:** `POST /run` for immediate or delayed launches, `PATCH /scheduled/{job_id}` for pending jobs (including a patch with only this field), and `periodic_jobs.<label>.diagnose_on_failure` / `services.<label>.diagnose_on_failure` in YAML. `POST /periodic/reload` updates future periodic runs without mutating a run already in flight; it does not reload `services:`.
+- **Where it appears:** `RunResponse`, `ProcessInfo`, start/exit heartbeat events, service `RESTART` / `CIRCUIT_BREAKER` / `CIRCUIT_BREAKER_RESET` events, durable `ScheduledJob` records, and per-run `PeriodicRun` snapshots. SQLite schema v3 backfills historical rows as `true` and preserves `false` across restarts.
 - **Contract:** `diagnose_on_failure: false` never masks a non-zero exit code as success and does not suppress captured stdout/stderr logs, timeouts, internal exit callbacks, or scheduled/periodic status updates. The launcher publishes the policy; external diagnostic consumers must honor explicit `false` and treat omitted fields as enabled (`true`).
 
 ### OpenCode Same-Session Reminders

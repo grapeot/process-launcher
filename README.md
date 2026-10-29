@@ -72,8 +72,8 @@ Tracked runs include `diagnose_on_failure: true` by default so external failure 
 }
 ```
 
-- **Supported surfaces:** `POST /run` (immediate or delayed jobs), `PATCH /scheduled/{id}` while a scheduled job is `pending` (including a patch payload containing only `{"diagnose_on_failure": false}`), and `periodic_jobs:` declarations in YAML.
-- **Propagation and durability:** The flag is returned in `POST /run` responses, tracked in `/processes` metadata, emitted on start and exit heartbeat events, and persisted in SQLite (schema v3, defaulting historical rows to `true`) for both `scheduled_jobs` and per-run `periodic_runs` snapshots. Restart recovery preserves `false`, and `POST /periodic/reload` does not rewrite the snapshot of a periodic run already in flight.
+- **Supported surfaces:** `POST /run` (immediate or delayed jobs), `PATCH /scheduled/{id}` while a scheduled job is `pending` (including a patch payload containing only `{"diagnose_on_failure": false}`), and `periodic_jobs:` / `services:` declarations in YAML.
+- **Propagation and durability:** The flag is returned in `POST /run` responses, tracked in `/processes` metadata, emitted on start and exit heartbeat events (plus service `RESTART`, `CIRCUIT_BREAKER`, and `CIRCUIT_BREAKER_RESET`), and persisted in SQLite (schema v3, defaulting historical rows to `true`) for both `scheduled_jobs` and per-run `periodic_runs` snapshots. Restart recovery preserves `false`, and `POST /periodic/reload` does not rewrite the snapshot of a periodic run already in flight.
 - **Execution semantics:** Setting `diagnose_on_failure: false` does not turn a failure into success or disable output logs, timeouts, exit callbacks, or scheduling state transitions. Process Launcher only publishes the policy flag; external diagnostic consumers must honor an explicit `false` and treat missing fields on older records or events as `true`.
 
 ## macOS TCC Permission Bridge

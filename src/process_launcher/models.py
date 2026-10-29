@@ -105,6 +105,7 @@ class ServiceConfig(BaseModel):
     cwd: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
     env_file: str | None = None
+    diagnose_on_failure: bool = True
     restart_delay: float = 10.0
     max_restarts: int = 3
     restart_window: float = 60.0

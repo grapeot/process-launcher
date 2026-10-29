@@ -17,6 +17,7 @@ services:
     cwd: /path/to/demo/project
     env:
       DEMO_MODE: development
+    diagnose_on_failure: false
     restart_delay: 10
     max_restarts: 3
     restart_window: 60
