@@ -58,7 +58,10 @@ class ServiceMonitor:
         runtime.restart_count = 0
         runtime.failure_chain_start = None
         runtime.status = ProcessStatus.EXITED
-        self.heartbeat_logger.write_event("CIRCUIT_BREAKER_RESET", label=label)
+        self.heartbeat_logger.write_event(
+            "CIRCUIT_BREAKER_RESET", label=label,
+            diagnose_on_failure=runtime.config.diagnose_on_failure,
+        )
         return await self._start_service(label)
 
     def list_services(self) -> list[dict[str, object]]:
@@ -84,6 +87,7 @@ class ServiceMonitor:
             cwd=runtime.config.cwd,
             env=runtime.config.env,
             label=runtime.config.label,
+            diagnose_on_failure=runtime.config.diagnose_on_failure,
         )
         response = await self.process_manager.start_process(
             request,
@@ -120,6 +124,7 @@ class ServiceMonitor:
                 "CIRCUIT_BREAKER",
                 label=label,
                 consecutive_failures=runtime.restart_count,
+                diagnose_on_failure=runtime.config.diagnose_on_failure,
             )
             return
 
@@ -129,6 +134,7 @@ class ServiceMonitor:
             label=label,
             attempt=runtime.restart_count,
             reason=f"exit_code={info.exit_code}",
+            diagnose_on_failure=runtime.config.diagnose_on_failure,
         )
         runtime.restarting_task = asyncio.create_task(self._restart_after_delay(label, runtime.config.restart_delay))
 
