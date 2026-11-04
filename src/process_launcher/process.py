@@ -274,13 +274,33 @@ class ProcessManager:
             diagnose_on_failure=handle.info.diagnose_on_failure,
         )
 
+        if self._loop is not None and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._deliver_exit, handle, on_exit)
+
+    def _deliver_exit(self, handle: TrackedProcess, on_exit: ExitCallback | None) -> None:
+        """Update asyncio-owned state on its event loop, never the waiter thread."""
         if handle.timeout_task is not None:
             handle.timeout_task.cancel()
+        if on_exit is not None:
+            try:
+                result = on_exit(handle.info)
+                if asyncio.iscoroutine(result):
+                    task = asyncio.create_task(result)
+                    task.add_done_callback(self._exit_callback_done)
+            except Exception as exc:
+                self._report_exit_callback_error(exc, handle.info.pid)
 
-        if on_exit and self._loop is not None and not self._loop.is_closed():
-            result = on_exit(handle.info)
-            if asyncio.iscoroutine(result):
-                self._loop.call_soon_threadsafe(asyncio.create_task, result)
+    def _exit_callback_done(self, task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and (error := task.exception()) is not None:
+            self._report_exit_callback_error(error)
+
+    def _report_exit_callback_error(self, error: BaseException, pid: int | None = None) -> None:
+        if self._loop is not None:
+            self._loop.call_exception_handler({
+                "message": "process exit callback failed",
+                "exception": error,
+                "pid": pid,
+            })
 
     async def _enforce_timeout(self, pid: int, timeout: float) -> None:
         try:
