@@ -13,6 +13,7 @@ from .models import (
     PeriodicRunStatus,
     PeriodicRuntime,
     ProcessInfo,
+    ProcessStatus,
     RunRequest,
 )
 from .process import ProcessManager
@@ -125,9 +126,24 @@ class PeriodicManager:
                 await self._start_run(process_manager, job, scheduled_for)
             except asyncio.CancelledError:
                 return
+            except Exception as exc:
+                asyncio.get_running_loop().call_exception_handler({
+                    "message": "periodic run failed to start; retrying at next scheduled time",
+                    "exception": exc,
+                    "label": job.label,
+                })
 
     async def _start_run(self, process_manager: ProcessManager, job: PeriodicJobConfig, scheduled_for: datetime) -> None:
         active = self._active_runs.get(job.label)
+        if active and active.status == PeriodicRunStatus.RUNNING and active.result_pid is not None:
+            info = process_manager.get_process(active.result_pid)
+            # Reconcile only this exact tracked process, not a reused PID or an
+            # absent handle. Terminal process state includes descendant cleanup.
+            if (info is not None and info.status != ProcessStatus.RUNNING
+                    and info.label == active.label and active.output_file is not None
+                    and info.output_file == active.output_file):
+                _mark_periodic_exit(self, active.id, info)
+                active = self._active_runs.get(job.label)
         if active and active.status == PeriodicRunStatus.RUNNING and job.overlap_policy == PeriodicOverlapPolicy.SKIP:
             skipped = PeriodicRun(
                 label=job.label,
@@ -155,8 +171,8 @@ class PeriodicManager:
             status=PeriodicRunStatus.RUNNING,
             started_at=datetime.now(),
         )
-        self._active_runs[job.label] = run
         self.store.upsert_periodic_run(run)
+        self._active_runs[job.label] = run
         request = RunRequest(command=job.command, cwd=job.cwd, env=job.env, label=job.label, timeout=job.timeout,
                              diagnose_on_failure=run.diagnose_on_failure)
         try:
@@ -164,13 +180,22 @@ class PeriodicManager:
                 request,
                 on_exit=lambda info: _mark_periodic_exit(self, run.id, info),
             )
-            self._update_run(run.model_copy(update={"result_pid": response.pid, "output_file": response.output_file}))
         except Exception as exc:
+            if self._active_runs.get(job.label) is run:
+                self._active_runs.pop(job.label)
             self._update_run(
                 run.model_copy(
                     update={"status": PeriodicRunStatus.FAILED, "last_error": str(exc), "completed_at": datetime.now()}
                 )
             )
+            return
+
+        started = run.model_copy(update={"result_pid": response.pid, "output_file": response.output_file})
+        # Once spawned, retain the process identity even if SQLite is temporarily
+        # unavailable. A bookkeeping error must not permit another live child.
+        if self._active_runs.get(job.label) is run:
+            self._active_runs[job.label] = started
+        self._update_run(started)
 
     def mark_completed(self, run_id: str) -> None:
         run = self.store.get_periodic_run(run_id)
@@ -183,6 +208,11 @@ class PeriodicManager:
             self._update_run(run.model_copy(update={"status": PeriodicRunStatus.FAILED, "last_error": error, "completed_at": datetime.now()}))
 
     def _update_run(self, run: PeriodicRun) -> None:
+        previous = self.store.get_periodic_run(run.id)
+        if previous is not None and previous.status != PeriodicRunStatus.RUNNING and run.status == PeriodicRunStatus.RUNNING:
+            # A fast process may finish before start_process returns metadata.
+            # Preserve its terminal state while retaining the PID/output path.
+            run = previous.model_copy(update={"result_pid": run.result_pid, "output_file": run.output_file})
         self.store.upsert_periodic_run(run)
         if run.status == PeriodicRunStatus.RUNNING:
             self._active_runs[run.label] = run
