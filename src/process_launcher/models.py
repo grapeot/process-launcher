@@ -93,6 +93,7 @@ class LoggingConfig(BaseModel):
     dir: str = "logs"
     heartbeat_retention_days: int = 30
     output_retention_days: int = 30
+    retention_interval_seconds: int = Field(default=3600, gt=0)
 
 
 class StorageConfig(BaseModel):

@@ -6,6 +6,7 @@ logging:
   dir: logs
   heartbeat_retention_days: 30
   output_retention_days: 30
+  retention_interval_seconds: 3600
 
 storage:
   sqlite_path: state/launcher.db
