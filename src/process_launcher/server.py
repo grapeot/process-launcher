@@ -26,6 +26,7 @@ from .models import (
 )
 from .periodic import PeriodicManager
 from .process import ProcessManager
+from .retention import LogRetention
 from .scheduled import ScheduleConflictError, ScheduledManager
 from .service_monitor import ServiceMonitor
 from .storage import SQLiteStore
@@ -204,6 +205,8 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
             return process_manager.get_output(pid, tail=tail)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="process not found") from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="log file not found") from exc
 
     @app.post("/declared-services/{label}/restart", response_model=ProcessInfo)
     async def restart_declared_service(label: str) -> ProcessInfo:
@@ -227,6 +230,11 @@ def create_app(config_path: str | Path | None = None, config: LauncherConfig | N
     async def list_output_logs() -> list[dict[str, Any]]:
         output_logger: OutputLogger = app.state.output_logger
         return output_logger.list_output_logs()
+
+    @app.get("/logs/retention")
+    async def log_retention_status() -> dict[str, object]:
+        retention: LogRetention = app.state.log_retention
+        return dict(retention.status())
 
     @app.get("/logs/output/{filename}")
     async def read_output_log(filename: str, tail: int | None = Query(default=None, ge=1)) -> dict[str, Any]:
@@ -287,6 +295,8 @@ async def initialize_app_state(app: FastAPI, launcher_config: LauncherConfig, co
     service_monitor.register_services(launcher_config.services)
     scheduled_manager = ScheduledManager(sqlite_store)
     periodic_manager = PeriodicManager(sqlite_store, launcher_config.periodic_jobs)
+    retention = LogRetention(heartbeat_logger, output_logger, process_manager.active_output_paths,
+                             launcher_config.logging.retention_interval_seconds)
 
     app.state.launcher_config = launcher_config
     app.state.heartbeat_logger = heartbeat_logger
@@ -295,10 +305,12 @@ async def initialize_app_state(app: FastAPI, launcher_config: LauncherConfig, co
     app.state.service_monitor = service_monitor
     app.state.scheduled_manager = scheduled_manager
     app.state.periodic_manager = periodic_manager
+    app.state.log_retention = retention
 
     scheduled_manager.recover_pending(process_manager)
     periodic_manager.start(process_manager)
     await service_monitor.start_registered_services()
+    retention.start()
 
 
 async def shutdown_app_state(app: FastAPI) -> None:
@@ -306,6 +318,9 @@ async def shutdown_app_state(app: FastAPI) -> None:
     process_manager: ProcessManager | None = getattr(app.state, "process_manager", None)
     scheduled_manager: ScheduledManager | None = getattr(app.state, "scheduled_manager", None)
     periodic_manager: PeriodicManager | None = getattr(app.state, "periodic_manager", None)
+    retention: LogRetention | None = getattr(app.state, "log_retention", None)
+    if retention is not None:
+        await asyncio.to_thread(retention.stop)
     if periodic_manager is not None:
         periodic_manager.shutdown()
     if scheduled_manager is not None:
@@ -317,6 +332,6 @@ async def shutdown_app_state(app: FastAPI) -> None:
     if scheduled_manager is not None:
         scheduled_manager.close()
 
-    for attr in ("service_monitor", "process_manager", "heartbeat_logger", "output_logger", "launcher_config", "scheduled_manager", "periodic_manager"):
+    for attr in ("service_monitor", "process_manager", "heartbeat_logger", "output_logger", "launcher_config", "scheduled_manager", "periodic_manager", "log_retention"):
         if hasattr(app.state, attr):
             delattr(app.state, attr)

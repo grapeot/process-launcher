@@ -211,6 +211,12 @@ class ProcessManager:
         handle = self.processes.get(pid)
         return handle.info if handle else None
 
+    def active_output_paths(self) -> set[Path]:
+        with self._lock:
+            handles = list(self.processes.values())
+        return {handle.output_path for handle in handles if handle.info.status == ProcessStatus.RUNNING
+                or (handle.output_thread is not None and handle.output_thread.is_alive())}
+
     def get_output(self, pid: int, tail: int | None = None) -> dict[str, object]:
         handle = self._get_handle(pid)
         output_path = Path(handle.info.output_file or handle.output_path)

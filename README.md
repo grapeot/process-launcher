@@ -112,6 +112,10 @@ tmux new-session -d -s launcher 'process-launcher start --config config/launcher
 
 Do not add it to crontab, launchd plists, PM2 ecosystem files, or any supervisor that would start it without a GUI terminal ancestor.
 
+## Log Retention
+
+The launcher runs one background retention worker after startup and repeats the sweep at `logging.retention_interval_seconds` (default: 3600). Process starts and heartbeat writes do not trigger directory scans. Both log types retain their existing 30-day defaults, and the sweep skips output logs still in use and the current UTC heartbeat log. `GET /logs/retention` reports whether a sweep is running, its latest start and success timestamps, and the latest error. A failed pass is logged and retried at the next interval.
+
 ## Private Overlay Pattern
 
 This repository is public-ready and generic, shipping a routing guide in `skills/INDEX.md`, reusable skills in `skills/skill_process_launcher.md` and `skills/skill_agentic_patrol.md`, public docs, and fake configuration examples. A user workspace can keep a private overlay separately: aliases, real job recipes, private paths, domain-specific service labels, and operational runbooks. That overlay should point to this package but should not be committed here.
